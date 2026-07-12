@@ -10,7 +10,6 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var enabledMods: [InstalledMod] = []
     @Published private(set) var disabledMods: [InstalledMod] = []
     @Published private(set) var installedFolderNames: Set<String> = []
-    @Published private(set) var detectedManualMods: [DetectedMod] = []
     @Published private(set) var updateAvailableNames: Set<String> = []
     @Published private(set) var catalogItems: [CatalogMod] = []
     @Published private(set) var isLoadingCatalog = false
@@ -23,7 +22,6 @@ final class ModFolderStore: ObservableObject {
     private let catalogCacheKey = "bmiCatalogCacheV2"
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
-    private let registryMigrationKey = "installedModRegistryMigrationV1"
     private let installedModRegistry = InstalledModRegistry()
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
@@ -177,21 +175,6 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    func adopt(_ detectedMod: DetectedMod) {
-        let catalogMod = detectedMod.catalogMod
-        installedModRegistry.add(
-            InstalledModRecord(
-                name: detectedMod.folder.name,
-                path: detectedMod.folder.id.path,
-                dependencies: [],
-                currentVersion: catalogMod?.version,
-                orphaned: false,
-                catalogID: catalogMod?.id
-            )
-        )
-        refreshMods()
-    }
-
     private func restoreFolderAccess() {
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
 
@@ -244,11 +227,7 @@ final class ModFolderStore: ObservableObject {
         enabledMods = allMods.filter { !isIgnored($0) }
         disabledMods = allMods.filter(isIgnored)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
-        bootstrapExistingModsIfNeeded()
         installedModRegistry.reconcile(existingNames: installedFolderNames)
-        detectedManualMods = (enabledMods + disabledMods)
-            .filter { !installedModRegistry.isTracked($0.name) }
-            .map { DetectedMod(folder: $0, catalogMod: catalogMods[$0.name.lowercased()]) }
     }
 
     private func migrateLegacyDisabledMods() {
@@ -270,24 +249,6 @@ final class ModFolderStore: ObservableObject {
 
     private func isIgnored(_ mod: InstalledMod) -> Bool {
         FileManager.default.fileExists(atPath: mod.id.appendingPathComponent(".lovelyignore").path)
-    }
-
-    private func bootstrapExistingModsIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: registryMigrationKey) else { return }
-        for localMod in enabledMods + disabledMods where !installedModRegistry.isTracked(localMod.name) {
-            let catalogMod = catalogMods[localMod.name.lowercased()]
-            installedModRegistry.add(
-                InstalledModRecord(
-                    name: localMod.name,
-                    path: localMod.id.path,
-                    dependencies: [],
-                    currentVersion: catalogMod?.version,
-                    orphaned: false,
-                    catalogID: catalogMod?.id
-                )
-            )
-        }
-        UserDefaults.standard.set(true, forKey: registryMigrationKey)
     }
 
     private func startBackgroundReindex() {

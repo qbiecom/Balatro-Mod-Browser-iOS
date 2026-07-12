@@ -35,10 +35,6 @@ final class InstalledModRegistry {
         })
     }
 
-    func isTracked(_ name: String) -> Bool {
-        load().contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-    }
-
     func record(named name: String) -> InstalledModRecord? {
         load().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
