@@ -125,6 +125,16 @@ struct DetailCacheEntry: Codable {
     let refreshedAt: Date
 }
 
+struct InstalledModRecord: Codable, Identifiable {
+    let name: String
+    let path: String
+    let dependencies: [String]
+    let currentVersion: String?
+    let orphaned: Bool
+
+    var id: String { name.lowercased() }
+}
+
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled

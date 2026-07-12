@@ -21,6 +21,7 @@ final class ModFolderStore: ObservableObject {
     private let catalogCacheKey = "bmiCatalogCacheV2"
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
+    private let installedModRegistry = InstalledModRegistry()
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
     private let downloadsCacheLifetime: TimeInterval = 60 * 15
@@ -91,6 +92,7 @@ final class ModFolderStore: ObservableObject {
     func delete(_ mod: InstalledMod) {
         do {
             try FileManager.default.removeItem(at: mod.id)
+            installedModRegistry.remove(named: mod.name)
             refreshMods()
         } catch {
             showError(error.localizedDescription)
@@ -433,6 +435,15 @@ final class ModFolderStore: ObservableObject {
             }
 
             try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            installedModRegistry.add(
+                InstalledModRecord(
+                    name: mod.installFolderName,
+                    path: destinationURL.path,
+                    dependencies: [],
+                    currentVersion: mod.version,
+                    orphaned: false
+                )
+            )
             refreshMods()
         } catch {
             showError(error.localizedDescription)
