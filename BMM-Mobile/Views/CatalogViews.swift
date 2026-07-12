@@ -11,6 +11,7 @@ struct AllModsView: View {
     let layout: TileLayout
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
+    @State private var sortAscending = true
     @State private var searchText = ""
 
     private var columns: [GridItem] {
@@ -32,7 +33,16 @@ struct AllModsView: View {
                 HStack {
                     Text(category.map { "All Mods: \($0)" } ?? "All Mods")
                         .font(.title3.weight(.semibold))
+                    Text("\(sortedMods.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
+                    Button {
+                        sortAscending.toggle()
+                    } label: {
+                        Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
+                    }
+                    .accessibilityLabel(sortAscending ? "Sort ascending" : "Sort descending")
                     Menu {
                         Picker("Sort", selection: $sort) {
                             ForEach(CatalogSort.allCases) { option in
@@ -98,22 +108,31 @@ struct AllModsView: View {
         .sorted { lhs, rhs in
             switch sort {
             case .name:
-                return (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
+                return compareText(lhs.name ?? lhs.id, rhs.name ?? rhs.id)
             case .author:
-                return (lhs.author ?? "Unknown").localizedStandardCompare(rhs.author ?? "Unknown") == .orderedAscending
+                return compareText(lhs.author ?? "Unknown", rhs.author ?? "Unknown")
             case .category:
-                return (lhs.categories?.first ?? "Miscellaneous").localizedStandardCompare(rhs.categories?.first ?? "Miscellaneous") == .orderedAscending
+                return compareText(lhs.categories?.first ?? "Miscellaneous", rhs.categories?.first ?? "Miscellaneous")
             case .lastUpdated:
-                return (lhs.updatedAt?.value ?? 0) > (rhs.updatedAt?.value ?? 0)
+                return compareNumber(lhs.updatedAt?.value ?? 0, rhs.updatedAt?.value ?? 0)
             case .downloads:
                 let left = lhs.downloads?.total ?? 0
                 let right = rhs.downloads?.total ?? 0
                 if left == right {
-                    return (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
+                    return compareText(lhs.name ?? lhs.id, rhs.name ?? rhs.id)
                 }
-                return left > right
+                return compareNumber(Int64(left), Int64(right))
             }
         }
+    }
+
+    private func compareText(_ lhs: String, _ rhs: String) -> Bool {
+        let order = lhs.localizedStandardCompare(rhs)
+        return sortAscending ? order == .orderedAscending : order == .orderedDescending
+    }
+
+    private func compareNumber(_ lhs: Int64, _ rhs: Int64) -> Bool {
+        sortAscending ? lhs < rhs : lhs > rhs
     }
 
     private func normalizedCategory(_ value: String) -> String {
