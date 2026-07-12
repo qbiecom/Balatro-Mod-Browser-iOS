@@ -116,7 +116,18 @@ struct ContentView: View {
             List(selection: $selectedDestination) {
                 Section {
                     ForEach(AppSection.allCases) { section in
-                        Label(section.rawValue, systemImage: section.icon)
+                        HStack {
+                            Label(section.rawValue, systemImage: section.icon)
+                            Spacer()
+                            if section == .installed, !folderStore.updateAvailableNames.isEmpty {
+                                Text("\(folderStore.updateAvailableNames.count)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.orange, in: Capsule())
+                            }
+                        }
                             .tag(SidebarDestination.section(section))
                     }
                 }
@@ -196,12 +207,14 @@ struct ContentView: View {
             AllModsView(
                 mods: folderStore.catalogItems,
                 isLoading: folderStore.isLoadingCatalog,
+                loadError: folderStore.catalogErrorMessage,
                 installedFolderNames: folderStore.installedFolderNames,
                 isInstalling: folderStore.isInstalling,
                 installingModName: folderStore.installingModName,
                 folderStore: folderStore,
                 category: selectedDestination?.category,
                 layout: cardDensity.layout,
+                refresh: folderStore.forceRefreshCatalog,
                 install: folderStore.install
             )
         case .section(.settings):
@@ -209,7 +222,9 @@ struct ContentView: View {
                 gameFolderURL: folderStore.gameFolderURL,
                 cardDensity: $cardDensityRaw,
                 appTheme: $appThemeRaw,
-                clearCache: folderStore.clearCatalogCache
+                clearCache: folderStore.clearCatalogCache,
+                totalModCount: folderStore.totalModCount,
+                lastCatalogRefresh: folderStore.lastCatalogRefresh
             ) {
                 isShowingFolderPicker = true
             }
@@ -226,6 +241,8 @@ struct ContentView: View {
                         systemImage: "folder.badge.questionmark",
                         description: Text("Choose the game folder from your Lovely Mobile Maker app.")
                     )
+                    Button("Choose Game Folder") { isShowingFolderPicker = true }
+                        .buttonStyle(.borderedProminent)
                 } else {
                     if folderStore.isLoadingCatalog {
                         HStack(spacing: 8) {

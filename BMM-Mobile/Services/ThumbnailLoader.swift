@@ -44,6 +44,12 @@ final class ThumbnailLoader: ObservableObject {
         } catch { return }
     }
 
+    func retry() async {
+        image = nil
+        isLoading = false
+        await load()
+    }
+
     private static func fileURL(for url: URL) -> URL {
         let encoded = Data(url.absoluteString.utf8).base64EncodedString()
             .replacingOccurrences(of: "/", with: "_")

@@ -13,6 +13,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var updateAvailableNames: Set<String> = []
     @Published private(set) var catalogItems: [CatalogMod] = []
     @Published private(set) var isLoadingCatalog = false
+    @Published private(set) var catalogErrorMessage: String?
     @Published private(set) var installingModIDs: Set<String> = []
     @Published private(set) var installingModName: String?
     @Published var isShowingError = false
@@ -41,6 +42,9 @@ final class ModFolderStore: ObservableObject {
     private var disabledModsFolderURL: URL? {
         gameFolderURL?.appendingPathComponent("Disabled Mods", isDirectory: true)
     }
+
+    var totalModCount: Int { enabledMods.count + disabledMods.count }
+    var lastCatalogRefresh: Date? { catalogRefreshedAt }
 
     init() {
         loadCachedCatalog()
@@ -125,6 +129,7 @@ final class ModFolderStore: ObservableObject {
         guard !isLoadingCatalog else { return }
 
         Task {
+            catalogErrorMessage = nil
             await fetchCatalog(forceDownloads: true)
         }
     }
@@ -343,6 +348,7 @@ final class ModFolderStore: ObservableObject {
         guard !isLoadingCatalog else { return }
 
         isLoadingCatalog = true
+        catalogErrorMessage = nil
         defer { isLoadingCatalog = false }
 
         do {
@@ -374,6 +380,7 @@ final class ModFolderStore: ObservableObject {
             refreshAvailableUpdates()
             await refreshDownloadsIfNeeded(force: forceDownloads)
         } catch {
+            catalogErrorMessage = "Couldn’t update the mod catalog. Check your connection and try again."
             return
         }
     }

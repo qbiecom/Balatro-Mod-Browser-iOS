@@ -5,6 +5,8 @@ struct SettingsView: View {
     @Binding var cardDensity: String
     @Binding var appTheme: String
     let clearCache: () -> Void
+    let totalModCount: Int
+    let lastCatalogRefresh: Date?
     let chooseFolder: () -> Void
 
     var body: some View {
@@ -19,6 +21,13 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+                }
+            }
+
+            Section("Status") {
+                LabeledContent("Installed Mods", value: "\(totalModCount)")
+                LabeledContent("Catalog") {
+                    Text(lastCatalogRefresh.map { $0.formatted(.relative(presentation: .named)) } ?? "Not loaded")
                 }
             }
 

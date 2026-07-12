@@ -242,6 +242,13 @@ struct ModThumbnail: View {
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else if url != nil && loader.isLoading {
                     ProgressView()
+                } else if url != nil {
+                    Button {
+                        Task { await loader.retry() }
+                    } label: {
+                        placeholder
+                    }
+                    .accessibilityLabel("Retry thumbnail")
                 } else {
                     placeholder
                 }

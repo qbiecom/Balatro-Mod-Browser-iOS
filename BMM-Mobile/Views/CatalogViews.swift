@@ -3,12 +3,14 @@ import SwiftUI
 struct AllModsView: View {
     let mods: [CatalogMod]
     let isLoading: Bool
+    let loadError: String?
     let installedFolderNames: Set<String>
     let isInstalling: (CatalogMod) -> Bool
     let installingModName: String?
     @ObservedObject var folderStore: ModFolderStore
     let category: String?
     let layout: TileLayout
+    let refresh: () -> Void
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
     @State private var sortAscending = true
@@ -28,6 +30,23 @@ struct AllModsView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if let loadError {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text(loadError)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(action: refresh) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("Retry catalog refresh")
+                    }
+                    .padding(10)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
 
                 HStack {
@@ -67,9 +86,9 @@ struct AllModsView: View {
 
                 if sortedMods.isEmpty {
                     ContentUnavailableView(
-                        "No Mods Available",
-                        systemImage: "square.stack.3d.up",
-                        description: Text("The catalog will appear after the Mod Index is loaded.")
+                        loadError == nil ? "No Mods Available" : "Catalog Unavailable",
+                        systemImage: loadError == nil ? "square.stack.3d.up" : "wifi.exclamationmark",
+                        description: Text(loadError == nil ? "The catalog will appear after the Mod Index is loaded." : "Try refreshing when your connection is available.")
                     )
                 } else {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
@@ -300,8 +319,22 @@ struct CatalogModDetailView: View {
 
             if let repository = displayedMod.repository, let url = URL(string: repository) {
                 Link(destination: url) {
-                    Label("Open Mod Website", systemImage: "arrow.up.right.square")
+                    Label("Open Repository", systemImage: "arrow.up.right.square")
                 }
+            }
+
+            if folderStore.isInstalled(displayedMod) {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Button {
+                    folderStore.install(displayedMod)
+                } label: {
+                    Label("Install Mod", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(folderStore.isInstalling(displayedMod))
             }
         }
         .padding(16)
