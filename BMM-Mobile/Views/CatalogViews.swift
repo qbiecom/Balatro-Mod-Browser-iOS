@@ -157,6 +157,21 @@ struct CatalogTile: View {
                             .foregroundStyle(.tint)
                             .lineLimit(1)
                     }
+
+                    HStack(spacing: 8) {
+                        if mod.requiresSteamodded == true {
+                            Label("Steamodded", systemImage: "puzzlepiece")
+                        }
+                        if mod.requiresTalisman == true {
+                            Label("Talisman", systemImage: "wand.and.stars")
+                        }
+                        if let downloads = mod.downloads?.total {
+                            Label(downloads.formatted(), systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -191,7 +206,19 @@ struct CatalogTile: View {
         }
         .padding(12)
         .frame(width: TileLayout.width, height: TileLayout.height, alignment: .topLeading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var cardBackground: AnyShapeStyle {
+        if let colors = mod.colors {
+            return AnyShapeStyle(LinearGradient(
+                colors: [Color(hex: colors.first).opacity(0.28), Color(hex: colors.second).opacity(0.22)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
+        } else {
+            return AnyShapeStyle(.thinMaterial)
+        }
     }
 }
 
@@ -301,5 +328,17 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
         case .lastUpdated: "Last Updated"
         case .downloads: "Downloads"
         }
+    }
+}
+
+private extension Color {
+    init(hex: String) {
+        let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        var number: UInt64 = 0
+        Scanner(string: value).scanHexInt64(&number)
+        let red = Double((number >> 16) & 0xFF) / 255
+        let green = Double((number >> 8) & 0xFF) / 255
+        let blue = Double(number & 0xFF) / 255
+        self.init(red: red, green: green, blue: blue)
     }
 }

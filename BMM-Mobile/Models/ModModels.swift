@@ -42,9 +42,10 @@ struct CatalogMod: Codable, Identifiable {
     let downloadURL: String?
     let downloads: ModDownloads?
     let isDeleted: Bool?
+    let colors: ModColors?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, author, summary, version, categories, description, downloads
+        case id, name, author, summary, version, categories, description, downloads, colors
         case folderName = "folder_name"
         case repository = "repo"
         case thumbnailPath = "thumbnail_url"
@@ -84,8 +85,38 @@ struct CatalogMod: Codable, Identifiable {
             requiresSteamodded: detail.requiresSteamodded ?? requiresSteamodded,
             requiresTalisman: detail.requiresTalisman ?? requiresTalisman,
             downloadURL: detail.downloadURL ?? downloadURL, downloads: detail.downloads ?? downloads,
-            isDeleted: detail.isDeleted ?? isDeleted
+            isDeleted: detail.isDeleted ?? isDeleted, colors: detail.colors ?? colors
         )
+    }
+}
+
+struct ModColors: Codable {
+    let first: String
+    let second: String
+
+    init(from decoder: Decoder) throws {
+        if var values = try? decoder.singleValueContainer().decode([String].self), values.count >= 2 {
+            first = values.removeFirst()
+            second = values.removeFirst()
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        first = try container.decodeIfPresent(String.self, forKey: .color1)
+            ?? container.decodeIfPresent(String.self, forKey: .first)
+            ?? "#2C2C2E"
+        second = try container.decodeIfPresent(String.self, forKey: .color2)
+            ?? container.decodeIfPresent(String.self, forKey: .second)
+            ?? first
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case color1, color2, first, second
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(first, forKey: .color1)
+        try container.encode(second, forKey: .color2)
     }
 }
 
