@@ -107,6 +107,7 @@ struct ContentView: View {
                 installedFolderNames: folderStore.installedFolderNames,
                 isInstalling: folderStore.isInstalling,
                 installingModName: folderStore.installingModName,
+                folderStore: folderStore,
                 install: folderStore.install
             )
         case .settings:
@@ -189,6 +190,7 @@ private struct AllModsView: View {
     let installedFolderNames: Set<String>
     let isInstalling: (CatalogMod) -> Bool
     let installingModName: String?
+    @ObservedObject var folderStore: ModFolderStore
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
 
@@ -245,6 +247,7 @@ private struct AllModsView: View {
                                 mod: mod,
                                 isInstalled: installedFolderNames.contains(mod.installFolderName.lowercased()),
                                 isInstalling: isInstalling(mod),
+                                folderStore: folderStore,
                                 install: { install(mod) }
                             )
                         }
@@ -275,30 +278,39 @@ private struct CatalogTile: View {
     let mod: CatalogMod
     let isInstalled: Bool
     let isInstalling: Bool
+    @ObservedObject var folderStore: ModFolderStore
     let install: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ZStack {
-                ModThumbnail(url: mod.thumbnailURL)
+            NavigationLink {
+                CatalogModDetailView(mod: mod, folderStore: folderStore)
+            } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    ZStack {
+                        ModThumbnail(url: mod.thumbnailURL)
+                    }
+                    .frame(height: TileLayout.thumbnailHeight)
+
+                    Text(mod.name ?? mod.id)
+                        .font(.headline)
+                        .lineLimit(2)
+
+                    Text(mod.cleanedSummary ?? "No description available")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    if let author = mod.author {
+                        Text(author)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: TileLayout.thumbnailHeight)
-
-            Text(mod.name ?? mod.id)
-                .font(.headline)
-                .lineLimit(2)
-
-            Text(mod.cleanedSummary ?? "No description available")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-
-            if let author = mod.author {
-                Text(author)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 
@@ -329,6 +341,95 @@ private struct CatalogTile: View {
         }
         .padding(12)
         .frame(width: TileLayout.width, height: TileLayout.height, alignment: .topLeading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct CatalogModDetailView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    let mod: CatalogMod
+    @ObservedObject var folderStore: ModFolderStore
+
+    private var displayedMod: CatalogMod {
+        folderStore.catalogMod(id: mod.id) ?? mod
+    }
+
+    var body: some View {
+        ScrollView {
+            Group {
+                if horizontalSizeClass == .compact {
+                    VStack(alignment: .leading, spacing: 16) {
+                        sidebar
+                        details
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        sidebar.frame(width: 240)
+                        details
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("Mod Details")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await folderStore.loadDetail(for: mod) }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ModThumbnail(url: displayedMod.thumbnailURL)
+                .aspectRatio(4 / 3, contentMode: .fit)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Author")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(displayedMod.author ?? "Unknown")
+                    .font(.headline)
+            }
+
+            if let repository = displayedMod.repository, let url = URL(string: repository) {
+                Link(destination: url) {
+                    Label("Open Mod Website", systemImage: "arrow.up.right.square")
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(displayedMod.name ?? displayedMod.id)
+                    .font(.title2.weight(.bold))
+                Text(displayedMod.cleanedSummary ?? "No description available")
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                if let version = displayedMod.version, !version.isEmpty {
+                    DetailRow(label: "Version", value: version)
+                }
+                if let categories = displayedMod.categories, !categories.isEmpty {
+                    DetailRow(label: "Categories", value: categories.joined(separator: ", "))
+                }
+                if displayedMod.requiresSteamodded == true {
+                    DetailRow(label: "Requires", value: "Steamodded")
+                }
+                if displayedMod.requiresTalisman == true {
+                    DetailRow(label: "Requires", value: "Talisman")
+                }
+                if let downloads = displayedMod.downloads?.total {
+                    DetailRow(label: "Downloads", value: downloads.formatted())
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
@@ -912,6 +1013,14 @@ private final class ModFolderStore: ObservableObject {
 
     func loadDetail(for mod: InstalledMod) async {
         guard let catalogMod = catalogMods[mod.name.lowercased()] else { return }
+        await loadDetail(for: catalogMod)
+    }
+
+    func catalogMod(id: String) -> CatalogMod? {
+        catalogMods[id.lowercased()]
+    }
+
+    func loadDetail(for catalogMod: CatalogMod) async {
         let key = catalogMod.id.lowercased()
         if let cached = detailCache[key],
            Date().timeIntervalSince(cached.refreshedAt) < detailCacheLifetime {
