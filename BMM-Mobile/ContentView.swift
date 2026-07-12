@@ -61,16 +61,17 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(AppSection.allCases, selection: $selectedSection) { section in
-                Label(section.rawValue, systemImage: section.icon)
-                    .tag(section)
-            }
-            .overlay(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Categories")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
+            List(selection: $selectedSection) {
+                Section {
+                    ForEach(AppSection.allCases) { section in
+                        Label(section.rawValue, systemImage: section.icon)
+                            .tag(section)
+                            .onTapGesture {
+                                if section == .allMods { selectedCategory = nil }
+                            }
+                    }
+                }
+                Section("Categories") {
                     Button {
                         selectedSection = .allMods
                         selectedCategory = nil
@@ -84,14 +85,11 @@ struct ContentView: View {
                         } label: {
                             Label(category.rawValue, systemImage: category.icon)
                         }
-                        .foregroundStyle(selectedCategory == category && selectedSection == .allMods ? Color.accentColor : Color.primary)
                     }
                 }
-                .buttonStyle(.plain)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.bar)
             }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 250)
             .navigationTitle("BMM Mobile")
         } detail: {
             NavigationStack {
