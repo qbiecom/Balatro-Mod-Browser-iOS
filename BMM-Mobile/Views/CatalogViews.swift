@@ -182,6 +182,13 @@ struct CatalogTile: View {
                             .lineLimit(1)
                     }
 
+                    if let updatedAt = mod.updatedAt, updatedAt.value > 0 {
+                        Text("Updated \(Date(timeIntervalSince1970: TimeInterval(updatedAt.value)).formatted(.relative(presentation: .named)))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
                     HStack(spacing: 8) {
                         if mod.requiresSteamodded == true {
                             Label("Steamodded", systemImage: "puzzlepiece")
