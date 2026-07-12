@@ -10,6 +10,7 @@ struct AllModsView: View {
     let category: String?
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
+    @State private var searchText = ""
 
     private let columns = [GridItem(.adaptive(minimum: TileLayout.width, maximum: TileLayout.width), spacing: 14)]
 
@@ -51,7 +52,7 @@ struct AllModsView: View {
                     }
                 }
 
-                if mods.isEmpty {
+                if sortedMods.isEmpty {
                     ContentUnavailableView(
                         "No Mods Available",
                         systemImage: "square.stack.3d.up",
@@ -73,6 +74,7 @@ struct AllModsView: View {
             }
             .padding()
         }
+        .searchable(text: $searchText, prompt: "Search mods")
     }
 
     private var sortedMods: [CatalogMod] {
@@ -82,16 +84,30 @@ struct AllModsView: View {
                 normalizedCategory($0) == normalizedCategory(category)
             } == true
         }
+        .filter { mod in
+            guard !searchText.isEmpty else { return true }
+            let query = searchText.localizedLowercase
+            return [mod.name, mod.author, mod.summary, mod.categories?.joined(separator: " ")]
+                .compactMap { $0?.localizedLowercase }
+                .contains { $0.contains(query) }
+        }
         .sorted { lhs, rhs in
             switch sort {
             case .name:
-                (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
+                return (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
             case .author:
-                (lhs.author ?? "Unknown").localizedStandardCompare(rhs.author ?? "Unknown") == .orderedAscending
+                return (lhs.author ?? "Unknown").localizedStandardCompare(rhs.author ?? "Unknown") == .orderedAscending
             case .category:
-                (lhs.categories?.first ?? "Miscellaneous").localizedStandardCompare(rhs.categories?.first ?? "Miscellaneous") == .orderedAscending
+                return (lhs.categories?.first ?? "Miscellaneous").localizedStandardCompare(rhs.categories?.first ?? "Miscellaneous") == .orderedAscending
             case .lastUpdated:
-                (lhs.updatedAt?.value ?? 0) > (rhs.updatedAt?.value ?? 0)
+                return (lhs.updatedAt?.value ?? 0) > (rhs.updatedAt?.value ?? 0)
+            case .downloads:
+                let left = lhs.downloads?.total ?? 0
+                let right = rhs.downloads?.total ?? 0
+                if left == right {
+                    return (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
+                }
+                return left > right
             }
         }
     }
@@ -132,6 +148,13 @@ struct CatalogTile: View {
                         Text(author)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    if let category = mod.categories?.first {
+                        Text(category)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.tint)
                             .lineLimit(1)
                     }
                 }
@@ -266,6 +289,7 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
     case author
     case category
     case lastUpdated
+    case downloads
 
     var id: Self { self }
 
@@ -275,6 +299,7 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
         case .author: "Author"
         case .category: "Category"
         case .lastUpdated: "Last Updated"
+        case .downloads: "Downloads"
         }
     }
 }
