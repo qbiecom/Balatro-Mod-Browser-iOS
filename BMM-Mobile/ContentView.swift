@@ -3,6 +3,7 @@ import Combine
 import UniformTypeIdentifiers
 import Foundation
 import ZIPFoundation
+import UIKit
 
 private enum AppSection: String, CaseIterable, Identifiable {
     case installed = "Installed Mods"
@@ -156,6 +157,7 @@ struct ContentView: View {
                         ModTile(
                             mod: mod,
                             presentation: folderStore.presentation(for: mod),
+                            folderStore: folderStore,
                             isEnabled: isEnabled
                         ) {
                             folderStore.setEnabled(!isEnabled, for: mod)
@@ -394,6 +396,7 @@ private struct FlexibleTimestamp: Codable {
 private struct ModTile: View {
     let mod: InstalledMod
     let presentation: ModPresentation
+    @ObservedObject var folderStore: ModFolderStore
     let isEnabled: Bool
     let toggle: () -> Void
     let delete: () -> Void
@@ -401,7 +404,7 @@ private struct ModTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             NavigationLink {
-                ModDetailView(mod: mod, presentation: presentation, isEnabled: isEnabled)
+                ModDetailView(mod: mod, folderStore: folderStore, isEnabled: isEnabled)
             } label: {
                 VStack(alignment: .leading, spacing: 10) {
                     ZStack {
@@ -471,6 +474,12 @@ private struct CatalogMod: Codable, Identifiable {
     let repository: String?
     let thumbnailPath: String?
     let updatedAt: FlexibleTimestamp?
+    let description: String?
+    let requiresSteamodded: Bool?
+    let requiresTalisman: Bool?
+    let downloadURL: String?
+    let downloads: ModDownloads?
+    let isDeleted: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -483,6 +492,12 @@ private struct CatalogMod: Codable, Identifiable {
         case repository = "repo"
         case thumbnailPath = "thumbnail_url"
         case updatedAt = "updated_at"
+        case description
+        case requiresSteamodded = "requires_steamodded"
+        case requiresTalisman = "requires_talisman"
+        case downloadURL = "download_url"
+        case downloads
+        case isDeleted = "deleted"
     }
 
     var installFolderName: String {
@@ -491,7 +506,7 @@ private struct CatalogMod: Codable, Identifiable {
     }
 
     var cleanedSummary: String? {
-        let value = summary?
+        let value = (description ?? summary)?
             .replacingOccurrences(of: "![]", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value?.isEmpty == false ? value : nil
@@ -505,6 +520,32 @@ private struct CatalogMod: Codable, Identifiable {
         let path = thumbnailPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: "https://api-bmi.dasguney.com/")?.appendingPathComponent(path)
     }
+
+    func merged(with detail: CatalogMod) -> CatalogMod {
+        CatalogMod(
+            id: id,
+            name: detail.name ?? name,
+            author: detail.author ?? author,
+            summary: detail.summary ?? summary,
+            folderName: detail.folderName ?? folderName,
+            version: detail.version ?? version,
+            categories: detail.categories ?? categories,
+            repository: detail.repository ?? repository,
+            thumbnailPath: detail.thumbnailPath ?? thumbnailPath,
+            updatedAt: detail.updatedAt ?? updatedAt,
+            description: detail.description ?? description,
+            requiresSteamodded: detail.requiresSteamodded ?? requiresSteamodded,
+            requiresTalisman: detail.requiresTalisman ?? requiresTalisman,
+            downloadURL: detail.downloadURL ?? downloadURL,
+            downloads: detail.downloads ?? downloads,
+            isDeleted: detail.isDeleted ?? isDeleted
+        )
+    }
+}
+
+private struct ModDownloads: Codable {
+    let total: Int?
+    let today: Int?
 }
 
 private struct ModPresentation {
@@ -521,8 +562,12 @@ private struct ModDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     let mod: InstalledMod
-    let presentation: ModPresentation
+    @ObservedObject var folderStore: ModFolderStore
     let isEnabled: Bool
+
+    private var presentation: ModPresentation {
+        folderStore.presentation(for: mod)
+    }
 
     var body: some View {
         ScrollView {
@@ -544,6 +589,9 @@ private struct ModDetailView: View {
         }
         .navigationTitle("Mod Details")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await folderStore.loadDetail(for: mod)
+        }
     }
 
     private var sidebar: some View {
@@ -616,6 +664,12 @@ private struct DetailRow: View {
 
 private struct ModThumbnail: View {
     let url: URL?
+    @StateObject private var loader: ThumbnailLoader
+
+    init(url: URL?) {
+        self.url = url
+        _loader = StateObject(wrappedValue: ThumbnailLoader(url: url))
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -623,31 +677,83 @@ private struct ModThumbnail: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.secondary.opacity(0.16))
 
-                if let url {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                        } else if phase.error == nil {
-                            ProgressView()
-                        } else {
-                            placeholder
-                        }
-                    }
+                if let image = loader.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else if url != nil && loader.isLoading {
+                    ProgressView()
                 } else {
                     placeholder
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
+        .task { await loader.load() }
     }
 
     private var placeholder: some View {
         Image(systemName: "photo")
             .font(.title2)
             .foregroundStyle(.secondary)
+    }
+}
+
+@MainActor
+private final class ThumbnailLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    @Published private(set) var isLoading = false
+
+    private static let cacheLifetime: TimeInterval = 60 * 60 * 24 * 7
+    private static let memoryCache = NSCache<NSString, UIImage>()
+    private let url: URL?
+
+    init(url: URL?) {
+        self.url = url
+    }
+
+    func load() async {
+        guard image == nil, !isLoading, let url else { return }
+        let key = url.absoluteString as NSString
+        if let cached = Self.memoryCache.object(forKey: key) {
+            image = cached
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+        let fileURL = Self.fileURL(for: url)
+        if let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+           let date = values.contentModificationDate,
+           Date().timeIntervalSince(date) < Self.cacheLifetime,
+           let data = try? Data(contentsOf: fileURL),
+           let cached = UIImage(data: data) {
+            Self.memoryCache.setObject(cached, forKey: key)
+            image = cached
+            return
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode,
+                  let downloaded = UIImage(data: data) else { return }
+            try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: fileURL, options: .atomic)
+            Self.memoryCache.setObject(downloaded, forKey: key)
+            image = downloaded
+        } catch {
+            return
+        }
+    }
+
+    private static func fileURL(for url: URL) -> URL {
+        let encoded = Data(url.absoluteString.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ModThumbnails", isDirectory: true)
+        return directory.appendingPathComponent(encoded).appendingPathExtension("image")
     }
 }
 
@@ -659,6 +765,17 @@ private struct CatalogPage: Decodable {
         case items
         case nextCursor = "next_cursor"
     }
+}
+
+private struct CatalogCache: Codable {
+    let items: [String: CatalogMod]
+    let lastUpdatedAt: FlexibleTimestamp?
+    let refreshedAt: Date
+}
+
+private struct DetailCacheEntry: Codable {
+    let mod: CatalogMod
+    let refreshedAt: Date
 }
 
 private enum ModInstallError: LocalizedError {
@@ -689,11 +806,18 @@ private final class ModFolderStore: ObservableObject {
     @Published private(set) var errorMessage = ""
 
     private let bookmarkKey = "gameFolderBookmark"
-    private let catalogCacheKey = "modIndexMetadataCache"
-    private let catalogCacheDateKey = "modIndexMetadataCacheDate"
-    private let catalogCacheLifetime: TimeInterval = 60 * 60 * 6
+    private let catalogCacheKey = "bmiCatalogCacheV2"
+    private let detailCacheKey = "bmiDetailCacheV1"
+    private let downloadsCacheKey = "bmiDownloadsCacheV1"
+    private let catalogCacheLifetime: TimeInterval = 60 * 15
+    private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
+    private let downloadsCacheLifetime: TimeInterval = 60 * 15
     private var activeGameFolderURL: URL?
     private var catalogMods: [String: CatalogMod] = [:]
+    private var latestCatalogUpdate: FlexibleTimestamp?
+    private var catalogRefreshedAt: Date?
+    private var detailCache: [String: DetailCacheEntry] = [:]
+    private var downloadsRefreshedAt: Date?
 
     private var modsFolderURL: URL? {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
@@ -705,6 +829,8 @@ private final class ModFolderStore: ObservableObject {
 
     init() {
         loadCachedCatalog()
+        loadCachedDetails()
+        loadCachedDownloads()
         restoreFolderAccess()
     }
 
@@ -780,7 +906,26 @@ private final class ModFolderStore: ObservableObject {
         guard !isLoadingCatalog else { return }
 
         Task {
-            await fetchCatalog()
+            await fetchCatalog(forceDownloads: true)
+        }
+    }
+
+    func loadDetail(for mod: InstalledMod) async {
+        guard let catalogMod = catalogMods[mod.name.lowercased()] else { return }
+        let key = catalogMod.id.lowercased()
+        if let cached = detailCache[key],
+           Date().timeIntervalSince(cached.refreshedAt) < detailCacheLifetime {
+            apply(catalogMod.merged(with: cached.mod))
+            return
+        }
+
+        do {
+            let detail = try await fetchModDetail(id: catalogMod.id)
+            detailCache[key] = DetailCacheEntry(mod: detail, refreshedAt: Date())
+            persistDetails()
+            apply(catalogMod.merged(with: detail))
+        } catch {
+            return
         }
     }
 
@@ -864,70 +1009,157 @@ private final class ModFolderStore: ObservableObject {
     }
 
     private var catalogNeedsRefresh: Bool {
-        if !catalogItems.isEmpty && catalogItems.allSatisfy({ $0.thumbnailPath == nil }) {
+        guard let catalogRefreshedAt else {
             return true
         }
-        guard let cacheDate = UserDefaults.standard.object(forKey: catalogCacheDateKey) as? Date else {
-            return true
-        }
-        return Date().timeIntervalSince(cacheDate) > catalogCacheLifetime
+        return Date().timeIntervalSince(catalogRefreshedAt) > catalogCacheLifetime
     }
 
     private func loadCachedCatalog() {
         guard let data = UserDefaults.standard.data(forKey: catalogCacheKey),
-              let cached = try? JSONDecoder().decode([String: CatalogMod].self, from: data) else {
+              let cached = try? JSONDecoder().decode(CatalogCache.self, from: data) else {
             return
         }
-        catalogMods = cached
-        catalogItems = uniqueCatalogItems(from: cached)
+        catalogMods = cached.items
+        latestCatalogUpdate = cached.lastUpdatedAt
+        catalogRefreshedAt = cached.refreshedAt
+        catalogItems = uniqueCatalogItems(from: cached.items)
     }
 
-    private func fetchCatalog() async {
-        guard !isLoadingCatalog else { return }
+    private func loadCachedDetails() {
+        guard let data = UserDefaults.standard.data(forKey: detailCacheKey),
+              let cached = try? JSONDecoder().decode([String: DetailCacheEntry].self, from: data) else { return }
+        detailCache = cached
+    }
 
-        var cursor: String?
-        var fetched: [String: CatalogMod] = [:]
+    private func loadCachedDownloads() {
+        guard let data = UserDefaults.standard.data(forKey: downloadsCacheKey),
+              let cache = try? JSONDecoder().decode(CatalogCache.self, from: data) else { return }
+        downloadsRefreshedAt = cache.refreshedAt
+        for mod in uniqueCatalogItems(from: cache.items) {
+            apply(mod)
+        }
+    }
+
+    private func fetchCatalog(forceDownloads: Bool = false) async {
+        guard !isLoadingCatalog else { return }
 
         isLoadingCatalog = true
         defer { isLoadingCatalog = false }
 
         do {
-            repeat {
-                var components = URLComponents(string: "https://api-bmi.dasguney.com/mods")
-                var queryItems = [
-                    URLQueryItem(name: "limit", value: "200"),
-                    URLQueryItem(name: "sort", value: "name_asc")
-                ]
-                if let cursor {
-                    queryItems.append(URLQueryItem(name: "cursor", value: cursor))
-                }
-                components?.queryItems = queryItems
-
-                guard let url = components?.url else { return }
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-                    return
-                }
-
-                let page = try JSONDecoder().decode(CatalogPage.self, from: data)
-                for mod in page.items {
-                    fetched[mod.id.lowercased()] = mod
-                    if let folderName = mod.folderName, !folderName.isEmpty {
-                        fetched[folderName.lowercased()] = mod
+            if catalogMods.isEmpty || latestCatalogUpdate == nil {
+                let fetched = try await fetchCatalogPages(path: "mods", query: [])
+                catalogMods = indexed(fetched)
+                latestCatalogUpdate = fetched.compactMap(\.updatedAt).max { $0.value < $1.value }
+            } else if let latestCatalogUpdate {
+                let changed = try await fetchCatalogPages(
+                    path: "mods/changed",
+                    query: [URLQueryItem(name: "since", value: String(latestCatalogUpdate.value))]
+                )
+                for mod in changed {
+                    if mod.isDeleted == true {
+                        remove(mod)
+                    } else {
+                        apply(mod)
                     }
                 }
-                cursor = page.nextCursor
-            } while cursor != nil
+                if let newest = changed.compactMap(\.updatedAt).max(by: { $0.value < $1.value }) {
+                    self.latestCatalogUpdate = newest
+                }
+            }
 
-            catalogMods = fetched
-            catalogItems = uniqueCatalogItems(from: fetched)
-            if let data = try? JSONEncoder().encode(fetched) {
-                UserDefaults.standard.set(data, forKey: catalogCacheKey)
-                UserDefaults.standard.set(Date(), forKey: catalogCacheDateKey)
+            catalogRefreshedAt = Date()
+            catalogItems = uniqueCatalogItems(from: catalogMods)
+            persistCatalog()
+            await refreshDownloadsIfNeeded(force: forceDownloads)
+        } catch {
+            return
+        }
+    }
+
+    private func refreshDownloadsIfNeeded(force: Bool) async {
+        guard force || downloadsRefreshedAt.map({ Date().timeIntervalSince($0) > downloadsCacheLifetime }) ?? true else { return }
+        do {
+            let mods = try await fetchCatalogPages(path: "mods", query: [])
+            for mod in mods where mod.downloads != nil {
+                apply(mod)
+            }
+            downloadsRefreshedAt = Date()
+            catalogItems = uniqueCatalogItems(from: catalogMods)
+            persistCatalog()
+            if let data = try? JSONEncoder().encode(CatalogCache(items: catalogMods, lastUpdatedAt: latestCatalogUpdate, refreshedAt: downloadsRefreshedAt ?? Date())) {
+                UserDefaults.standard.set(data, forKey: downloadsCacheKey)
             }
         } catch {
             return
         }
+    }
+
+    private func fetchCatalogPages(path: String, query: [URLQueryItem]) async throws -> [CatalogMod] {
+        var cursor: String?
+        var results: [CatalogMod] = []
+        repeat {
+            var components = URLComponents(string: "https://api-bmi.dasguney.com/\(path)")
+            var items = query + [
+                URLQueryItem(name: "limit", value: "200"),
+                URLQueryItem(name: "sort", value: "name_asc")
+            ]
+            if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+            components?.queryItems = items
+            guard let url = components?.url else { throw URLError(.badURL) }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
+                throw URLError(.badServerResponse)
+            }
+            let page = try JSONDecoder().decode(CatalogPage.self, from: data)
+            results.append(contentsOf: page.items)
+            cursor = page.nextCursor
+        } while cursor != nil
+        return results
+    }
+
+    private func fetchModDetail(id: String) async throws -> CatalogMod {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else { throw URLError(.badURL) }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(CatalogMod.self, from: data)
+    }
+
+    private func indexed(_ mods: [CatalogMod]) -> [String: CatalogMod] {
+        var indexed: [String: CatalogMod] = [:]
+        for mod in mods { index(mod, into: &indexed) }
+        return indexed
+    }
+
+    private func apply(_ mod: CatalogMod) {
+        let current = catalogMods[mod.id.lowercased()]
+        index(current?.merged(with: mod) ?? mod, into: &catalogMods)
+    }
+
+    private func index(_ mod: CatalogMod, into dictionary: inout [String: CatalogMod]) {
+        dictionary[mod.id.lowercased()] = mod
+        if let folderName = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty {
+            dictionary[folderName.lowercased()] = mod
+        }
+    }
+
+    private func remove(_ mod: CatalogMod) {
+        catalogMods = catalogMods.filter { $0.value.id.caseInsensitiveCompare(mod.id) != .orderedSame }
+    }
+
+    private func persistCatalog() {
+        guard let catalogRefreshedAt,
+              let data = try? JSONEncoder().encode(CatalogCache(items: catalogMods, lastUpdatedAt: latestCatalogUpdate, refreshedAt: catalogRefreshedAt)) else { return }
+        UserDefaults.standard.set(data, forKey: catalogCacheKey)
+    }
+
+    private func persistDetails() {
+        guard let data = try? JSONEncoder().encode(detailCache) else { return }
+        UserDefaults.standard.set(data, forKey: detailCacheKey)
     }
 
     private func downloadAndInstall(_ mod: CatalogMod) async {
