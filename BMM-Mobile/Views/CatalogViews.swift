@@ -179,7 +179,7 @@ struct CatalogTile: View {
                     .frame(height: layout.thumbnailHeight)
 
                     Text(mod.name ?? mod.id)
-                        .font(.headline)
+                        .font(.balatroChrome(18))
                         .lineLimit(2)
 
                     Text(mod.cleanedSummary ?? "No description available")
@@ -196,7 +196,7 @@ struct CatalogTile: View {
 
                     if let category = mod.categories?.first {
                         Text(category)
-                            .font(.caption2.weight(.medium))
+                            .font(.balatroChrome(12))
                             .foregroundStyle(.tint)
                             .lineLimit(1)
                     }
@@ -233,6 +233,7 @@ struct CatalogTile: View {
                 Button {} label: {
                     Label("Installed", systemImage: "checkmark.circle.fill")
                         .frame(maxWidth: .infinity)
+                        .font(.balatroChrome(16))
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
@@ -248,6 +249,7 @@ struct CatalogTile: View {
                     } else {
                         Label("Install", systemImage: "arrow.down.circle")
                             .frame(maxWidth: .infinity)
+                            .font(.balatroChrome(16))
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -255,7 +257,7 @@ struct CatalogTile: View {
             }
         }
         .padding(12)
-        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
+        .frame(width: layout.width, alignment: .topLeading)
         .background(cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
@@ -352,6 +354,12 @@ struct CatalogModDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
+                if let repository = displayedMod.repository, let url = URL(string: repository) {
+                    Link(destination: url) {
+                        Label("Open Repository", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                }
                 if let version = displayedMod.version, !version.isEmpty {
                     DetailRow(label: "Version", value: version)
                 }

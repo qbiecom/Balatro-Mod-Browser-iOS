@@ -128,6 +128,7 @@ struct ContentView: View {
                                     .background(.orange, in: Capsule())
                             }
                         }
+                        .font(.balatroChrome(17))
                             .tag(SidebarDestination.section(section))
                     }
                 }
@@ -135,7 +136,14 @@ struct ContentView: View {
                     Label("All Categories", systemImage: "line.3.horizontal.decrease.circle")
                         .tag(SidebarDestination.allCategories)
                     ForEach(ModCategory.allCases) { category in
-                        Label(category.rawValue, systemImage: category.icon)
+                        HStack {
+                            Label(category.rawValue, systemImage: category.icon)
+                            Spacer()
+                            Text("\(categoryCount(category))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.balatroChrome(15))
                             .tag(SidebarDestination.category(category))
                     }
                 }
@@ -301,6 +309,14 @@ struct ContentView: View {
             }
             return titleOrder == .orderedAscending
         }
+    }
+
+    private func categoryCount(_ category: ModCategory) -> Int {
+        folderStore.catalogItems.filter { mod in
+            mod.categories?.contains {
+                $0.lowercased().filter(\.isLetter) == category.rawValue.lowercased().filter(\.isLetter)
+            } == true
+        }.count
     }
 
 }

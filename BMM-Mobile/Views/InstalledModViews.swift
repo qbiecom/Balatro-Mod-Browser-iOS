@@ -28,7 +28,7 @@ struct ModTile: View {
                     .frame(height: layout.thumbnailHeight)
 
                     Text(presentation.title)
-                        .font(.headline)
+                        .font(.balatroChrome(18))
                         .lineLimit(2)
 
                     Text(presentation.description)
@@ -90,7 +90,7 @@ struct ModTile: View {
             }
         }
         .padding(12)
-        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
+        .frame(width: layout.width, alignment: .topLeading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
@@ -211,7 +211,7 @@ struct StatusChip: View {
 
     var body: some View {
         Text(title)
-            .font(.caption2.weight(.medium))
+            .font(.balatroChrome(12))
             .foregroundStyle(color)
             .lineLimit(1)
             .padding(.horizontal, 7)
