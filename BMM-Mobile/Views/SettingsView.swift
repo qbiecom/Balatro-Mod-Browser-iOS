@@ -3,6 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     let gameFolderURL: URL?
     @Binding var cardDensity: String
+    @Binding var appTheme: String
+    let clearCache: () -> Void
     let chooseFolder: () -> Void
 
     var body: some View {
@@ -33,6 +35,19 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+            }
+
+            Section("Appearance") {
+                Picker("Theme", selection: $appTheme) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Text(theme.title).tag(theme.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section("Catalog Cache") {
+                Button("Clear Catalog and Thumbnails", role: .destructive, action: clearCache)
             }
         }
     }

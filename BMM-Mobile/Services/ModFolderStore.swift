@@ -129,6 +129,22 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    func clearCatalogCache() {
+        UserDefaults.standard.removeObject(forKey: catalogCacheKey)
+        UserDefaults.standard.removeObject(forKey: detailCacheKey)
+        UserDefaults.standard.removeObject(forKey: downloadsCacheKey)
+        let thumbnailDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ModThumbnails", isDirectory: true)
+        try? FileManager.default.removeItem(at: thumbnailDirectory)
+        catalogMods = [:]
+        catalogItems = []
+        latestCatalogUpdate = nil
+        catalogRefreshedAt = nil
+        detailCache = [:]
+        downloadsRefreshedAt = nil
+        Task { await fetchCatalog(forceDownloads: true) }
+    }
+
     func loadDetail(for mod: InstalledMod) async {
         guard let catalogMod = catalogMods[mod.name.lowercased()] else { return }
         await loadDetail(for: catalogMod)

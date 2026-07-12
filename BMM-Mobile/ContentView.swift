@@ -74,6 +74,20 @@ enum CardDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 struct TileLayout {
     let width: CGFloat
     let height: CGFloat
@@ -87,10 +101,12 @@ struct TileLayout {
 struct ContentView: View {
     @StateObject private var folderStore = ModFolderStore()
     @AppStorage("cardDensity") private var cardDensityRaw = CardDensity.comfortable.rawValue
+    @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @State private var selectedDestination: SidebarDestination? = .section(.installed)
     @State private var isShowingFolderPicker = false
     @State private var modPendingDeletion: InstalledMod?
     private var cardDensity: CardDensity { CardDensity(rawValue: cardDensityRaw) ?? .comfortable }
+    private var appTheme: AppTheme { AppTheme(rawValue: appThemeRaw) ?? .system }
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: cardDensity.layout.width, maximum: cardDensity.layout.width), spacing: 14)]
     }
@@ -168,6 +184,7 @@ struct ContentView: View {
         .task {
             folderStore.refreshCatalogIfNeeded()
         }
+        .preferredColorScheme(appTheme.colorScheme)
     }
 
     @ViewBuilder
@@ -188,7 +205,12 @@ struct ContentView: View {
                 install: folderStore.install
             )
         case .section(.settings):
-            SettingsView(gameFolderURL: folderStore.gameFolderURL, cardDensity: $cardDensityRaw) {
+            SettingsView(
+                gameFolderURL: folderStore.gameFolderURL,
+                cardDensity: $cardDensityRaw,
+                appTheme: $appThemeRaw,
+                clearCache: folderStore.clearCatalogCache
+            ) {
                 isShowingFolderPicker = true
             }
         }
