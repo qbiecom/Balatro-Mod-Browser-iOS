@@ -22,6 +22,7 @@ final class ModFolderStore: ObservableObject {
     private let catalogCacheKey = "bmiCatalogCacheV2"
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
+    private let registryMigrationKey = "installedModRegistryMigrationV1"
     private let installedModRegistry = InstalledModRegistry()
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
@@ -241,10 +242,28 @@ final class ModFolderStore: ObservableObject {
         enabledMods = mods(in: modsFolderURL)
         disabledMods = mods(in: disabledModsFolderURL)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
+        bootstrapExistingModsIfNeeded()
         installedModRegistry.reconcile(existingNames: installedFolderNames)
         detectedManualMods = (enabledMods + disabledMods)
             .filter { !installedModRegistry.isTracked($0.name) }
             .map { DetectedMod(folder: $0, catalogMod: catalogMods[$0.name.lowercased()]) }
+    }
+
+    private func bootstrapExistingModsIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: registryMigrationKey) else { return }
+        for localMod in enabledMods + disabledMods where !installedModRegistry.isTracked(localMod.name) {
+            let catalogMod = catalogMods[localMod.name.lowercased()]
+            installedModRegistry.add(
+                InstalledModRecord(
+                    name: localMod.name,
+                    path: localMod.id.path,
+                    dependencies: [],
+                    currentVersion: catalogMod?.version,
+                    orphaned: false
+                )
+            )
+        }
+        UserDefaults.standard.set(true, forKey: registryMigrationKey)
     }
 
     private func startBackgroundReindex() {
@@ -329,6 +348,7 @@ final class ModFolderStore: ObservableObject {
             catalogRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
             persistCatalog()
+            refreshMods()
             await refreshDownloadsIfNeeded(force: forceDownloads)
         } catch {
             return
@@ -516,7 +536,7 @@ final class ModFolderStore: ObservableObject {
                 try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
             case .file:
                 try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try archive.extract(entry, to: outputURL, bufferSize: 64 * 1024)
+                _ = try archive.extract(entry, to: outputURL, bufferSize: 64 * 1024)
             case .symlink:
                 throw ModInstallError.unsafeArchive
             @unknown default:
