@@ -121,7 +121,7 @@ struct ContentView: View {
                             Spacer()
                             if section == .installed, !folderStore.updateAvailableNames.isEmpty {
                                 Text("\(folderStore.updateAvailableNames.count)")
-                                    .font(.caption.weight(.semibold))
+                                    .font(.balatroChrome(12))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
@@ -140,7 +140,7 @@ struct ContentView: View {
                             Label(category.rawValue, systemImage: category.icon)
                             Spacer()
                             Text("\(categoryCount(category))")
-                                .font(.caption)
+                                .font(.balatroChrome(12))
                                 .foregroundStyle(.secondary)
                         }
                         .font(.balatroChrome(15))
@@ -150,12 +150,22 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 250)
-            .navigationTitle("BMM Mobile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("BMM Mobile")
+                        .font(.balatroChrome(24))
+                }
+            }
         } detail: {
             NavigationStack {
                 selectedView
-                    .navigationTitle(selectedDestination?.title ?? "Balatro Mods")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            Text(selectedDestination?.title ?? "Balatro Mods")
+                                .font(.balatroChrome(24))
+                        }
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
                                 folderStore.forceRefreshCatalog()
@@ -204,6 +214,7 @@ struct ContentView: View {
             folderStore.refreshCatalogIfNeeded()
         }
         .preferredColorScheme(appTheme.colorScheme)
+        .font(.balatroChrome(16))
     }
 
     @ViewBuilder
@@ -256,7 +267,7 @@ struct ContentView: View {
                         HStack(spacing: 8) {
                             ProgressView()
                             Text("Updating mod details")
-                                .font(.subheadline)
+                                .font(.balatroChrome(16))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -272,7 +283,7 @@ struct ContentView: View {
     private func modGrid(title: String, mods: [InstalledMod], isEnabled: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
-                .font(.title3.weight(.semibold))
+                .font(.balatroChrome(22))
 
             if mods.isEmpty {
                 Text(isEnabled ? "No enabled mods" : "No disabled mods")

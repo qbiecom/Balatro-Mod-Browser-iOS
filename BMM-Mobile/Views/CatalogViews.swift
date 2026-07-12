@@ -27,7 +27,7 @@ struct AllModsView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                         Text("Updating mod catalog")
-                            .font(.subheadline)
+                            .font(.balatroChrome(16))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -37,7 +37,7 @@ struct AllModsView: View {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
                         Text(loadError)
-                            .font(.subheadline)
+                            .font(.balatroChrome(16))
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button(action: refresh) {
@@ -51,9 +51,9 @@ struct AllModsView: View {
 
                 HStack {
                     Text(category.map { "All Mods: \($0)" } ?? "All Mods")
-                        .font(.title3.weight(.semibold))
+                        .font(.balatroChrome(22))
                     Text("\(sortedMods.count)")
-                        .font(.caption)
+                        .font(.balatroChrome(12))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button {
@@ -78,7 +78,7 @@ struct AllModsView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                         Text("Installing \(installingModName)")
-                            .font(.subheadline)
+                            .font(.balatroChrome(16))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -183,13 +183,13 @@ struct CatalogTile: View {
                         .lineLimit(2)
 
                     Text(mod.cleanedSummary ?? "No description available")
-                        .font(.subheadline)
+                        .font(.balatroChrome(16))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
 
                     if let author = mod.author {
                         Text(author)
-                            .font(.caption)
+                            .font(.balatroChrome(12))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -203,7 +203,7 @@ struct CatalogTile: View {
 
                     if let updatedAt = mod.updatedAt, updatedAt.value > 0 {
                         Text("Updated \(Date(timeIntervalSince1970: TimeInterval(updatedAt.value)).formatted(.relative(presentation: .named)))")
-                            .font(.caption2)
+                            .font(.balatroChrome(11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -219,7 +219,7 @@ struct CatalogTile: View {
                             Label(downloads.formatted(), systemImage: "arrow.down.circle")
                         }
                     }
-                    .font(.caption2)
+                    .font(.balatroChrome(11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 }
@@ -313,10 +313,10 @@ struct CatalogModDetailView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Author")
-                    .font(.caption)
+                    .font(.balatroChrome(12))
                     .foregroundStyle(.secondary)
                 Text(displayedMod.author ?? "Unknown")
-                    .font(.headline)
+                    .font(.balatroChrome(18))
             }
 
             if let repository = displayedMod.repository, let url = URL(string: repository) {
@@ -348,7 +348,7 @@ struct CatalogModDetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(displayedMod.name ?? displayedMod.id)
-                    .font(.title2.weight(.bold))
+                    .font(.balatroChrome(28))
                 Text(displayedMod.cleanedSummary ?? "No description available")
                     .foregroundStyle(.secondary)
             }

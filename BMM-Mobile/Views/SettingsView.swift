@@ -18,7 +18,7 @@ struct SettingsView: View {
 
                 if let gameFolderURL {
                     Label(gameFolderURL.path, systemImage: "checkmark.circle")
-                        .font(.footnote)
+                        .font(.balatroChrome(12))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -33,7 +33,7 @@ struct SettingsView: View {
 
             Section("Lovely Mobile Maker") {
                 Label("Mod files use Lovely's .lovelyignore marker when disabled.", systemImage: "checkmark.seal")
-                    .font(.footnote)
+                    .font(.balatroChrome(12))
                     .foregroundStyle(.secondary)
             }
 

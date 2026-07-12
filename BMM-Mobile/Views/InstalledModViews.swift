@@ -32,13 +32,13 @@ struct ModTile: View {
                         .lineLimit(2)
 
                     Text(presentation.description)
-                        .font(.subheadline)
+                        .font(.balatroChrome(16))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
 
                     if let author = presentation.author {
                         Text(author)
-                            .font(.caption)
+                            .font(.balatroChrome(12))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -141,10 +141,10 @@ private struct ModDetailView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Author")
-                    .font(.caption)
+                    .font(.balatroChrome(12))
                     .foregroundStyle(.secondary)
                 Text(presentation.author ?? "Unknown")
-                    .font(.headline)
+                    .font(.balatroChrome(18))
             }
 
             if let repositoryURL = presentation.repositoryURL {
@@ -162,7 +162,7 @@ private struct ModDetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(presentation.title)
-                    .font(.title2.weight(.bold))
+                    .font(.balatroChrome(28))
                 Text(presentation.description)
                     .foregroundStyle(.secondary)
             }
@@ -260,7 +260,7 @@ struct ModThumbnail: View {
 
     private var placeholder: some View {
         Image(systemName: "photo")
-            .font(.title2)
+            .font(.balatroChrome(22))
             .foregroundStyle(.secondary)
     }
 }
