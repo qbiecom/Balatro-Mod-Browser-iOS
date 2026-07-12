@@ -128,11 +128,19 @@ struct DetailCacheEntry: Codable {
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled
+    case unsupportedArchive
+    case unsafeArchive
+    case archiveTooLarge
+    case tooManyArchiveFiles
 
     var errorDescription: String? {
         switch self {
         case .downloadFailed: "The mod download could not be completed."
         case .alreadyInstalled: "A mod with this folder name is already installed."
+        case .unsupportedArchive: "This archive format is not supported. Please use a ZIP release."
+        case .unsafeArchive: "This archive contains an unsafe file path."
+        case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
+        case .tooManyArchiveFiles: "This archive contains more than 10,000 files."
         }
     }
 }

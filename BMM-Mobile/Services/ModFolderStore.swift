@@ -4,6 +4,8 @@ import ZIPFoundation
 
 @MainActor
 final class ModFolderStore: ObservableObject {
+    private static let maximumArchiveFileCount = 10_000
+    private static let maximumArchiveUncompressedSize: UInt64 = 2 * 1024 * 1024 * 1024
     @Published private(set) var gameFolderURL: URL?
     @Published private(set) var enabledMods: [InstalledMod] = []
     @Published private(set) var disabledMods: [InstalledMod] = []
@@ -392,22 +394,25 @@ final class ModFolderStore: ObservableObject {
 
         do {
             let downloadURL = try await resolveDownloadURL(for: mod.id)
-            let (archiveData, response) = try await URLSession.shared.data(from: downloadURL)
+            let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
             guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
                 throw ModInstallError.downloadFailed
             }
 
             let archiveURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("zip")
-            try archiveData.write(to: archiveURL, options: .atomic)
+            try FileManager.default.moveItem(at: temporaryURL, to: archiveURL)
             defer { try? FileManager.default.removeItem(at: archiveURL) }
+
+            guard try isZIPArchive(at: archiveURL) else {
+                throw ModInstallError.unsupportedArchive
+            }
 
             let stagingURL = modsFolderURL.appendingPathComponent(".staging_\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: stagingURL, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: stagingURL) }
 
-            try FileManager.default.unzipItem(at: archiveURL, to: stagingURL)
+            try extractZIPArchive(at: archiveURL, to: stagingURL)
 
             let entries = try FileManager.default.contentsOfDirectory(
                 at: stagingURL,
@@ -431,6 +436,46 @@ final class ModFolderStore: ObservableObject {
             refreshMods()
         } catch {
             showError(error.localizedDescription)
+        }
+    }
+
+    private func isZIPArchive(at url: URL) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let magic = try handle.read(upToCount: 4) ?? Data()
+        return magic.starts(with: [0x50, 0x4B, 0x03, 0x04])
+            || magic.starts(with: [0x50, 0x4B, 0x05, 0x06])
+            || magic.starts(with: [0x50, 0x4B, 0x07, 0x08])
+    }
+
+    private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL) throws {
+        let archive = try Archive(url: archiveURL, accessMode: .read)
+        var fileCount = 0
+        var expandedSize: UInt64 = 0
+        let destinationPath = destinationURL.standardizedFileURL.path
+
+        for entry in archive {
+            fileCount += 1
+            guard fileCount <= Self.maximumArchiveFileCount else { throw ModInstallError.tooManyArchiveFiles }
+            expandedSize += entry.uncompressedSize
+            guard expandedSize <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
+
+            let outputURL = destinationURL.appendingPathComponent(entry.path).standardizedFileURL
+            guard outputURL.path == destinationPath || outputURL.path.hasPrefix(destinationPath + "/") else {
+                throw ModInstallError.unsafeArchive
+            }
+
+            switch entry.type {
+            case .directory:
+                try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+            case .file:
+                try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try archive.extract(entry, to: outputURL, bufferSize: 64 * 1024)
+            case .symlink:
+                throw ModInstallError.unsafeArchive
+            @unknown default:
+                throw ModInstallError.unsafeArchive
+            }
         }
     }
 
