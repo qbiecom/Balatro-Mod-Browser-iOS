@@ -554,7 +554,6 @@ final class ModFolderStore: ObservableObject {
         let archive = try Archive(url: archiveURL, accessMode: .read)
         var fileCount = 0
         var expandedSize: UInt64 = 0
-        let destinationPath = destinationURL.standardizedFileURL.path
 
         for entry in archive {
             fileCount += 1
@@ -562,10 +561,7 @@ final class ModFolderStore: ObservableObject {
             expandedSize += entry.uncompressedSize
             guard expandedSize <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
 
-            let outputURL = destinationURL.appendingPathComponent(entry.path).standardizedFileURL
-            guard outputURL.path == destinationPath || outputURL.path.hasPrefix(destinationPath + "/") else {
-                throw ModInstallError.unsafeArchive
-            }
+            let outputURL = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
 
             switch entry.type {
             case .directory:
@@ -578,6 +574,23 @@ final class ModFolderStore: ObservableObject {
             @unknown default:
                 throw ModInstallError.unsafeArchive
             }
+        }
+    }
+
+    private func safeArchiveOutputURL(for archivePath: String, in destinationURL: URL) throws -> URL {
+        // ZIP entries are conventionally slash-delimited, even when created on Windows.
+        let normalized = archivePath.replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty else { return destinationURL }
+        guard components.allSatisfy({ component in
+            component != "." && component != ".." && !component.contains(":")
+        }) else {
+            throw ModInstallError.unsafeArchive
+        }
+
+        return components.reduce(destinationURL) { url, component in
+            url.appendingPathComponent(String(component), isDirectory: false)
         }
     }
 
