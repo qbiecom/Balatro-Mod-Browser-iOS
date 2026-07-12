@@ -60,10 +60,24 @@ private enum SidebarDestination: Hashable {
     }
 }
 
-enum TileLayout {
-    static let width: CGFloat = 250
-    static let height: CGFloat = 348
-    static let thumbnailHeight: CGFloat = 132
+enum CardDensity: String, CaseIterable, Identifiable {
+    case compact
+    case comfortable
+
+    var id: String { rawValue }
+    var title: String { self == .compact ? "Compact" : "Comfortable" }
+    var layout: TileLayout {
+        switch self {
+        case .compact: TileLayout(width: 220, height: 316, thumbnailHeight: 116)
+        case .comfortable: TileLayout(width: 250, height: 348, thumbnailHeight: 132)
+        }
+    }
+}
+
+struct TileLayout {
+    let width: CGFloat
+    let height: CGFloat
+    let thumbnailHeight: CGFloat
 }
 
 #Preview {
@@ -72,10 +86,14 @@ enum TileLayout {
 
 struct ContentView: View {
     @StateObject private var folderStore = ModFolderStore()
+    @AppStorage("cardDensity") private var cardDensityRaw = CardDensity.comfortable.rawValue
     @State private var selectedDestination: SidebarDestination? = .section(.installed)
     @State private var isShowingFolderPicker = false
     @State private var modPendingDeletion: InstalledMod?
-    private let columns = [GridItem(.adaptive(minimum: TileLayout.width, maximum: TileLayout.width), spacing: 14)]
+    private var cardDensity: CardDensity { CardDensity(rawValue: cardDensityRaw) ?? .comfortable }
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: cardDensity.layout.width, maximum: cardDensity.layout.width), spacing: 14)]
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -166,10 +184,11 @@ struct ContentView: View {
                 installingModName: folderStore.installingModName,
                 folderStore: folderStore,
                 category: selectedDestination?.category,
+                layout: cardDensity.layout,
                 install: folderStore.install
             )
         case .section(.settings):
-            SettingsView(gameFolderURL: folderStore.gameFolderURL) {
+            SettingsView(gameFolderURL: folderStore.gameFolderURL, cardDensity: $cardDensityRaw) {
                 isShowingFolderPicker = true
             }
         }
@@ -220,6 +239,7 @@ struct ContentView: View {
                             folderStore: folderStore,
                             isEnabled: isEnabled,
                             isUpdateAvailable: folderStore.isUpdateAvailable(for: mod),
+                            layout: cardDensity.layout,
                             update: { folderStore.update(mod) }
                         ) {
                             folderStore.setEnabled(!isEnabled, for: mod)

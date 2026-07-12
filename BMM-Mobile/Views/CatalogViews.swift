@@ -8,11 +8,14 @@ struct AllModsView: View {
     let installingModName: String?
     @ObservedObject var folderStore: ModFolderStore
     let category: String?
+    let layout: TileLayout
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
     @State private var searchText = ""
 
-    private let columns = [GridItem(.adaptive(minimum: TileLayout.width, maximum: TileLayout.width), spacing: 14)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: layout.width, maximum: layout.width), spacing: 14)]
+    }
 
     var body: some View {
         ScrollView {
@@ -66,6 +69,7 @@ struct AllModsView: View {
                                 isInstalled: installedFolderNames.contains(mod.installFolderName.lowercased()),
                                 isInstalling: isInstalling(mod),
                                 folderStore: folderStore,
+                                layout: layout,
                                 install: { install(mod) }
                             )
                         }
@@ -122,6 +126,7 @@ struct CatalogTile: View {
     let isInstalled: Bool
     let isInstalling: Bool
     @ObservedObject var folderStore: ModFolderStore
+    let layout: TileLayout
     let install: () -> Void
 
     var body: some View {
@@ -133,7 +138,7 @@ struct CatalogTile: View {
                     ZStack {
                         ModThumbnail(url: mod.thumbnailURL)
                     }
-                    .frame(height: TileLayout.thumbnailHeight)
+                    .frame(height: layout.thumbnailHeight)
 
                     Text(mod.name ?? mod.id)
                         .font(.headline)
@@ -205,7 +210,7 @@ struct CatalogTile: View {
             }
         }
         .padding(12)
-        .frame(width: TileLayout.width, height: TileLayout.height, alignment: .topLeading)
+        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
         .background(cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 

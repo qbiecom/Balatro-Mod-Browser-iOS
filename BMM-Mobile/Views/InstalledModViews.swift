@@ -6,6 +6,7 @@ struct ModTile: View {
     @ObservedObject var folderStore: ModFolderStore
     let isEnabled: Bool
     let isUpdateAvailable: Bool
+    let layout: TileLayout
     let update: () -> Void
     let toggle: () -> Void
     let delete: () -> Void
@@ -24,7 +25,7 @@ struct ModTile: View {
                     ZStack {
                         ModThumbnail(url: presentation.thumbnailURL)
                     }
-                    .frame(height: TileLayout.thumbnailHeight)
+                    .frame(height: layout.thumbnailHeight)
 
                     Text(presentation.title)
                         .font(.headline)
@@ -89,7 +90,7 @@ struct ModTile: View {
             }
         }
         .padding(12)
-        .frame(width: TileLayout.width, height: TileLayout.height, alignment: .topLeading)
+        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
