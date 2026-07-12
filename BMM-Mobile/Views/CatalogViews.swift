@@ -7,6 +7,7 @@ struct AllModsView: View {
     let isInstalling: (CatalogMod) -> Bool
     let installingModName: String?
     @ObservedObject var folderStore: ModFolderStore
+    let category: String?
     let install: (CatalogMod) -> Void
     @State private var sort = CatalogSort.name
 
@@ -25,7 +26,7 @@ struct AllModsView: View {
                 }
 
                 HStack {
-                    Text("All Mods")
+                    Text(category.map { "All Mods: \($0)" } ?? "All Mods")
                         .font(.title3.weight(.semibold))
                     Spacer()
                     Menu {
@@ -75,7 +76,13 @@ struct AllModsView: View {
     }
 
     private var sortedMods: [CatalogMod] {
-        mods.sorted { lhs, rhs in
+        mods.filter { mod in
+            guard let category else { return true }
+            return mod.categories?.contains {
+                normalizedCategory($0) == normalizedCategory(category)
+            } == true
+        }
+        .sorted { lhs, rhs in
             switch sort {
             case .name:
                 (lhs.name ?? lhs.id).localizedStandardCompare(rhs.name ?? rhs.id) == .orderedAscending
@@ -87,6 +94,10 @@ struct AllModsView: View {
                 (lhs.updatedAt?.value ?? 0) > (rhs.updatedAt?.value ?? 0)
             }
         }
+    }
+
+    private func normalizedCategory(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter }
     }
 }
 

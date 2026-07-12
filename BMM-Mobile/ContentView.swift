@@ -18,6 +18,29 @@ private enum AppSection: String, CaseIterable, Identifiable {
     }
 }
 
+private enum ModCategory: String, CaseIterable, Identifiable {
+    case content = "Content"
+    case joker = "Joker"
+    case qualityOfLife = "Quality of Life"
+    case technical = "Technical"
+    case miscellaneous = "Miscellaneous"
+    case resourcePacks = "Resource Packs"
+    case api = "API"
+
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .content: "folder"
+        case .joker: "theatermasks"
+        case .qualityOfLife: "sparkles"
+        case .technical: "wrench.and.screwdriver"
+        case .miscellaneous: "square.grid.2x2"
+        case .resourcePacks: "shippingbox"
+        case .api: "curlybraces"
+        }
+    }
+}
+
 enum TileLayout {
     static let width: CGFloat = 250
     static let height: CGFloat = 288
@@ -31,6 +54,7 @@ enum TileLayout {
 struct ContentView: View {
     @StateObject private var folderStore = ModFolderStore()
     @State private var selectedSection: AppSection? = .installed
+    @State private var selectedCategory: ModCategory?
     @State private var isShowingFolderPicker = false
     @State private var modPendingDeletion: InstalledMod?
     private let columns = [GridItem(.adaptive(minimum: TileLayout.width, maximum: TileLayout.width), spacing: 14)]
@@ -40,6 +64,33 @@ struct ContentView: View {
             List(AppSection.allCases, selection: $selectedSection) { section in
                 Label(section.rawValue, systemImage: section.icon)
                     .tag(section)
+            }
+            .overlay(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Categories")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                    Button {
+                        selectedSection = .allMods
+                        selectedCategory = nil
+                    } label: {
+                        Label("All Categories", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                    ForEach(ModCategory.allCases) { category in
+                        Button {
+                            selectedSection = .allMods
+                            selectedCategory = category
+                        } label: {
+                            Label(category.rawValue, systemImage: category.icon)
+                        }
+                        .foregroundStyle(selectedCategory == category && selectedSection == .allMods ? Color.accentColor : Color.primary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
             }
             .navigationTitle("BMM Mobile")
         } detail: {
@@ -109,6 +160,7 @@ struct ContentView: View {
                 isInstalling: folderStore.isInstalling,
                 installingModName: folderStore.installingModName,
                 folderStore: folderStore,
+                category: selectedCategory?.rawValue,
                 install: folderStore.install
             )
         case .settings:
@@ -117,6 +169,7 @@ struct ContentView: View {
             }
         }
     }
+
 
     private var installedModsView: some View {
         ScrollView {
