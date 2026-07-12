@@ -13,7 +13,12 @@ struct ModTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             NavigationLink {
-                ModDetailView(mod: mod, folderStore: folderStore, isEnabled: isEnabled)
+                ModDetailView(
+                    mod: mod,
+                    folderStore: folderStore,
+                    isEnabled: isEnabled,
+                    isUpdateAvailable: isUpdateAvailable
+                )
             } label: {
                 VStack(alignment: .leading, spacing: 10) {
                     ZStack {
@@ -36,6 +41,20 @@ struct ModTile: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
+
+                    HStack(spacing: 6) {
+                        StatusChip(
+                            title: isEnabled ? "Enabled" : "Disabled",
+                            color: isEnabled ? .green : .secondary
+                        )
+                        if let category = presentation.categories.first {
+                            StatusChip(title: category, color: .blue)
+                        }
+                        if isUpdateAvailable {
+                            StatusChip(title: "Update", color: .orange)
+                        }
+                    }
+                    .lineLimit(1)
                 }
             }
             .buttonStyle(.plain)
@@ -81,6 +100,7 @@ private struct ModDetailView: View {
     let mod: InstalledMod
     @ObservedObject var folderStore: ModFolderStore
     let isEnabled: Bool
+    let isUpdateAvailable: Bool
 
     private var presentation: ModPresentation {
         folderStore.presentation(for: mod)
@@ -147,7 +167,12 @@ private struct ModDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                DetailRow(label: "Status", value: isEnabled ? "Enabled" : "Disabled")
+                HStack(spacing: 8) {
+                    StatusChip(title: isEnabled ? "Enabled" : "Disabled", color: isEnabled ? .green : .secondary)
+                    if isUpdateAvailable {
+                        StatusChip(title: "Update Available", color: .orange)
+                    }
+                }
                 DetailRow(label: "Folder", value: mod.name)
 
                 if let version = presentation.version, !version.isEmpty {
@@ -176,6 +201,21 @@ struct DetailRow: View {
             Text(value)
                 .multilineTextAlignment(.trailing)
         }
+    }
+}
+
+struct StatusChip: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(title)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.14), in: Capsule())
     }
 }
 
