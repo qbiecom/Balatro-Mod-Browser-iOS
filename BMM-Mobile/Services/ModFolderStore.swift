@@ -81,17 +81,15 @@ final class ModFolderStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
-        guard let destinationFolder = enabled ? modsFolderURL : disabledModsFolderURL else { return }
-
-        let destinationURL = destinationFolder.appendingPathComponent(mod.name, isDirectory: true)
-
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-            showError("A mod named \(mod.name) already exists in the destination folder.")
-            return
-        }
-
         do {
-            try FileManager.default.moveItem(at: mod.id, to: destinationURL)
+            let ignoreURL = mod.id.appendingPathComponent(".lovelyignore")
+            if enabled {
+                if FileManager.default.fileExists(atPath: ignoreURL.path) {
+                    try FileManager.default.removeItem(at: ignoreURL)
+                }
+            } else {
+                FileManager.default.createFile(atPath: ignoreURL.path, contents: Data())
+            }
             refreshMods()
         } catch {
             showError(error.localizedDescription)
@@ -241,14 +239,37 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func refreshMods() {
-        enabledMods = mods(in: modsFolderURL)
-        disabledMods = mods(in: disabledModsFolderURL)
+        migrateLegacyDisabledMods()
+        let allMods = mods(in: modsFolderURL)
+        enabledMods = allMods.filter { !isIgnored($0) }
+        disabledMods = allMods.filter(isIgnored)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
         bootstrapExistingModsIfNeeded()
         installedModRegistry.reconcile(existingNames: installedFolderNames)
         detectedManualMods = (enabledMods + disabledMods)
             .filter { !installedModRegistry.isTracked($0.name) }
             .map { DetectedMod(folder: $0, catalogMod: catalogMods[$0.name.lowercased()]) }
+    }
+
+    private func migrateLegacyDisabledMods() {
+        guard let legacyFolder = disabledModsFolderURL, let modsFolderURL else { return }
+        for mod in mods(in: legacyFolder) {
+            let destination = modsFolderURL.appendingPathComponent(mod.name, isDirectory: true)
+            guard !FileManager.default.fileExists(atPath: destination.path) else { continue }
+            do {
+                try FileManager.default.moveItem(at: mod.id, to: destination)
+                FileManager.default.createFile(
+                    atPath: destination.appendingPathComponent(".lovelyignore").path,
+                    contents: Data()
+                )
+            } catch {
+                continue
+            }
+        }
+    }
+
+    private func isIgnored(_ mod: InstalledMod) -> Bool {
+        FileManager.default.fileExists(atPath: mod.id.appendingPathComponent(".lovelyignore").path)
     }
 
     private func bootstrapExistingModsIfNeeded() {
@@ -536,6 +557,7 @@ final class ModFolderStore: ObservableObject {
                 )
             )
             refreshMods()
+            refreshAvailableUpdates()
         } catch {
             showError(error.localizedDescription)
         }

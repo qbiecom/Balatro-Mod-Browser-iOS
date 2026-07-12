@@ -18,7 +18,12 @@ struct SettingsView: View {
                         .lineLimit(2)
                 }
             }
+
+            Section("Lovely Mobile Maker") {
+                Label("Mod files use Lovely's .lovelyignore marker when disabled.", systemImage: "checkmark.seal")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
-
