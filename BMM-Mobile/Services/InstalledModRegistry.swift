@@ -22,6 +22,22 @@ final class InstalledModRegistry {
         save(load().filter { $0.name.caseInsensitiveCompare(name) != .orderedSame })
     }
 
+    func reconcile(existingNames: Set<String>) {
+        save(load().map { record in
+            InstalledModRecord(
+                name: record.name,
+                path: record.path,
+                dependencies: record.dependencies,
+                currentVersion: record.currentVersion,
+                orphaned: !existingNames.contains(record.name.lowercased())
+            )
+        })
+    }
+
+    func isTracked(_ name: String) -> Bool {
+        load().contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
     private func load() -> [InstalledModRecord] {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
         return (try? JSONDecoder().decode([InstalledModRecord].self, from: data)) ?? []

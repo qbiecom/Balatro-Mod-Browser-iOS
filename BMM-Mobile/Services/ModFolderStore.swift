@@ -10,6 +10,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var enabledMods: [InstalledMod] = []
     @Published private(set) var disabledMods: [InstalledMod] = []
     @Published private(set) var installedFolderNames: Set<String> = []
+    @Published private(set) var detectedManualMods: [DetectedMod] = []
     @Published private(set) var catalogItems: [CatalogMod] = []
     @Published private(set) var isLoadingCatalog = false
     @Published private(set) var installingModIDs: Set<String> = []
@@ -31,6 +32,7 @@ final class ModFolderStore: ObservableObject {
     private var catalogRefreshedAt: Date?
     private var detailCache: [String: DetailCacheEntry] = [:]
     private var downloadsRefreshedAt: Date?
+    private var reindexTask: Task<Void, Never>?
 
     private var modsFolderURL: URL? {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
@@ -45,6 +47,11 @@ final class ModFolderStore: ObservableObject {
         loadCachedDetails()
         loadCachedDownloads()
         restoreFolderAccess()
+        startBackgroundReindex()
+    }
+
+    deinit {
+        reindexTask?.cancel()
     }
 
     func handleFolderSelection(_ result: Result<[URL], Error>) {
@@ -170,6 +177,20 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    func adopt(_ detectedMod: DetectedMod) {
+        let catalogMod = detectedMod.catalogMod
+        installedModRegistry.add(
+            InstalledModRecord(
+                name: detectedMod.folder.name,
+                path: detectedMod.folder.id.path,
+                dependencies: [],
+                currentVersion: catalogMod?.version,
+                orphaned: false
+            )
+        )
+        refreshMods()
+    }
+
     private func restoreFolderAccess() {
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
 
@@ -220,6 +241,20 @@ final class ModFolderStore: ObservableObject {
         enabledMods = mods(in: modsFolderURL)
         disabledMods = mods(in: disabledModsFolderURL)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
+        installedModRegistry.reconcile(existingNames: installedFolderNames)
+        detectedManualMods = (enabledMods + disabledMods)
+            .filter { !installedModRegistry.isTracked($0.name) }
+            .map { DetectedMod(folder: $0, catalogMod: catalogMods[$0.name.lowercased()]) }
+    }
+
+    private func startBackgroundReindex() {
+        reindexTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                self?.refreshMods()
+            }
+        }
     }
 
     func refreshCatalogIfNeeded() {

@@ -135,6 +135,14 @@ struct InstalledModRecord: Codable, Identifiable {
     var id: String { name.lowercased() }
 }
 
+struct DetectedMod: Identifiable {
+    let folder: InstalledMod
+    let catalogMod: CatalogMod?
+
+    var id: URL { folder.id }
+    var title: String { catalogMod?.name ?? folder.name }
+}
+
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled

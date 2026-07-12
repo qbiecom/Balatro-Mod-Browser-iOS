@@ -138,6 +138,9 @@ struct ContentView: View {
                     }
                     modGrid(title: "Enabled Mods", mods: folderStore.enabledMods, isEnabled: true)
                     modGrid(title: "Disabled Mods", mods: folderStore.disabledMods, isEnabled: false)
+                    if !folderStore.detectedManualMods.isEmpty {
+                        untrackedModsView
+                    }
                 }
             }
             .padding()
@@ -183,5 +186,27 @@ struct ContentView: View {
             return titleOrder == .orderedAscending
         }
     }
-}
 
+    private var untrackedModsView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Untracked Local Mods")
+                .font(.title3.weight(.semibold))
+
+            ForEach(folderStore.detectedManualMods) { mod in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(mod.title)
+                        if mod.catalogMod == nil {
+                            Text(mod.folder.name)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button("Adopt") { folderStore.adopt(mod) }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+}
