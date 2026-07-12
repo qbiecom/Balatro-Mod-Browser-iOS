@@ -134,6 +134,9 @@ private struct ModDetailView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
+            Text(presentation.title)
+                .font(.balatroChrome(22))
+
             ZStack {
                 ModThumbnail(url: presentation.thumbnailURL)
             }
@@ -147,9 +150,37 @@ private struct ModDetailView: View {
                     .font(.balatroChrome(18))
             }
 
+            HStack(spacing: 8) {
+                StatusChip(title: isEnabled ? "Enabled" : "Disabled", color: isEnabled ? .green : .secondary)
+                if isUpdateAvailable {
+                    StatusChip(title: "Update", color: .orange)
+                }
+            }
+
+            if let downloads = presentation.downloads {
+                Label(downloads.formatted(), systemImage: "arrow.down.circle")
+                    .font(.balatroChrome(14))
+                    .foregroundStyle(.secondary)
+            }
+
             if let repositoryURL = presentation.repositoryURL {
                 Link(destination: repositoryURL) {
-                    Label("Open Mod Website", systemImage: "arrow.up.right.square")
+                    Label("Open Repository", systemImage: "arrow.up.right.square")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if !presentation.categories.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Categories")
+                        .font(.balatroChrome(12))
+                        .foregroundStyle(.secondary)
+                    FlowLayout(spacing: 6) {
+                        ForEach(presentation.categories, id: \.self) { category in
+                            StatusChip(title: category, color: .blue)
+                        }
+                    }
                 }
             }
         }
@@ -163,17 +194,11 @@ private struct ModDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(presentation.title)
                     .font(.balatroChrome(28))
-                Text(presentation.description)
+                Text(.init(presentation.description))
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    StatusChip(title: isEnabled ? "Enabled" : "Disabled", color: isEnabled ? .green : .secondary)
-                    if isUpdateAvailable {
-                        StatusChip(title: "Update Available", color: .orange)
-                    }
-                }
                 DetailRow(label: "Folder", value: mod.name)
 
                 if let version = presentation.version, !version.isEmpty {
@@ -182,11 +207,61 @@ private struct ModDetailView: View {
                 if !presentation.categories.isEmpty {
                     DetailRow(label: "Categories", value: presentation.categories.joined(separator: ", "))
                 }
+                if presentation.requiresSteamodded {
+                    DetailRow(label: "Requires", value: "Steamodded")
+                }
+                if presentation.requiresTalisman {
+                    DetailRow(label: "Requires", value: "Talisman")
+                }
+                if let downloads = presentation.downloads {
+                    DetailRow(label: "Downloads", value: downloads.formatted())
+                }
+                if let updatedAt = presentation.updatedAt {
+                    DetailRow(label: "Last Updated", value: updatedAt.formatted(date: .abbreviated, time: .omitted))
+                }
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct FlowLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .greatestFiniteMagnitude
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > width, x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: min(width, max(0, x - spacing)), height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var point = bounds.origin
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if point.x + size.width > bounds.maxX, point.x > bounds.minX {
+                point.x = bounds.minX
+                point.y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: point, proposal: ProposedViewSize(size))
+            point.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 

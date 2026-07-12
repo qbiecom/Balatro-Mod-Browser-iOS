@@ -110,9 +110,7 @@ final class ModFolderStore: ObservableObject {
 
     func presentation(for mod: InstalledMod) -> ModPresentation {
         let catalogMod = catalogMods[mod.name.lowercased()]
-        let summary = catalogMod?.summary?
-            .replacingOccurrences(of: "![]", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = catalogMod?.cleanedSummary
 
         return ModPresentation(
             title: catalogMod?.name ?? mod.name,
@@ -121,7 +119,11 @@ final class ModFolderStore: ObservableObject {
             version: catalogMod?.version,
             categories: catalogMod?.categories ?? [],
             repositoryURL: catalogMod?.repository.flatMap(URL.init(string:)),
-            thumbnailURL: catalogMod?.thumbnailURL
+            thumbnailURL: catalogMod?.thumbnailURL,
+            requiresSteamodded: catalogMod?.requiresSteamodded ?? false,
+            requiresTalisman: catalogMod?.requiresTalisman ?? false,
+            downloads: catalogMod?.downloads?.total,
+            updatedAt: catalogMod?.updatedAt.map { Date(timeIntervalSince1970: TimeInterval($0.value)) }
         )
     }
 

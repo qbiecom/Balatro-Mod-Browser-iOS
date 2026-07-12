@@ -133,6 +133,10 @@ struct ModPresentation {
     let categories: [String]
     let repositoryURL: URL?
     let thumbnailURL: URL?
+    let requiresSteamodded: Bool
+    let requiresTalisman: Bool
+    let downloads: Int?
+    let updatedAt: Date?
 }
 
 struct CatalogPage: Decodable {
