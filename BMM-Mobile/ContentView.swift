@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import Foundation
 
-private enum AppSection: String, CaseIterable, Identifiable {
+private enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case installed = "Installed Mods"
     case allMods = "All Mods"
     case settings = "Settings"
@@ -18,7 +18,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
     }
 }
 
-private enum ModCategory: String, CaseIterable, Identifiable {
+private enum ModCategory: String, CaseIterable, Identifiable, Hashable {
     case content = "Content"
     case joker = "Joker"
     case qualityOfLife = "Quality of Life"
@@ -41,6 +41,25 @@ private enum ModCategory: String, CaseIterable, Identifiable {
     }
 }
 
+private enum SidebarDestination: Hashable {
+    case section(AppSection)
+    case allCategories
+    case category(ModCategory)
+
+    var title: String {
+        switch self {
+        case .section(let section): section.rawValue
+        case .allCategories: "All Mods"
+        case .category(let category): category.rawValue
+        }
+    }
+
+    var category: String? {
+        if case .category(let category) = self { return category.rawValue }
+        return nil
+    }
+}
+
 enum TileLayout {
     static let width: CGFloat = 250
     static let height: CGFloat = 288
@@ -53,38 +72,26 @@ enum TileLayout {
 
 struct ContentView: View {
     @StateObject private var folderStore = ModFolderStore()
-    @State private var selectedSection: AppSection? = .installed
-    @State private var selectedCategory: ModCategory?
+    @State private var selectedDestination: SidebarDestination? = .section(.installed)
     @State private var isShowingFolderPicker = false
     @State private var modPendingDeletion: InstalledMod?
     private let columns = [GridItem(.adaptive(minimum: TileLayout.width, maximum: TileLayout.width), spacing: 14)]
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedSection) {
+            List(selection: $selectedDestination) {
                 Section {
                     ForEach(AppSection.allCases) { section in
                         Label(section.rawValue, systemImage: section.icon)
-                            .tag(section)
-                            .onTapGesture {
-                                if section == .allMods { selectedCategory = nil }
-                            }
+                            .tag(SidebarDestination.section(section))
                     }
                 }
                 Section("Categories") {
-                    Button {
-                        selectedSection = .allMods
-                        selectedCategory = nil
-                    } label: {
-                        Label("All Categories", systemImage: "line.3.horizontal.decrease.circle")
-                    }
+                    Label("All Categories", systemImage: "line.3.horizontal.decrease.circle")
+                        .tag(SidebarDestination.allCategories)
                     ForEach(ModCategory.allCases) { category in
-                        Button {
-                            selectedSection = .allMods
-                            selectedCategory = category
-                        } label: {
-                            Label(category.rawValue, systemImage: category.icon)
-                        }
+                        Label(category.rawValue, systemImage: category.icon)
+                            .tag(SidebarDestination.category(category))
                     }
                 }
             }
@@ -94,7 +101,7 @@ struct ContentView: View {
         } detail: {
             NavigationStack {
                 selectedView
-                    .navigationTitle(selectedSection?.rawValue ?? "Balatro Mods")
+                    .navigationTitle(selectedDestination?.title ?? "Balatro Mods")
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
@@ -147,10 +154,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var selectedView: some View {
-        switch selectedSection ?? .installed {
-        case .installed:
+        switch selectedDestination ?? .section(.installed) {
+        case .section(.installed):
             installedModsView
-        case .allMods:
+        case .section(.allMods), .allCategories, .category:
             AllModsView(
                 mods: folderStore.catalogItems,
                 isLoading: folderStore.isLoadingCatalog,
@@ -158,10 +165,10 @@ struct ContentView: View {
                 isInstalling: folderStore.isInstalling,
                 installingModName: folderStore.installingModName,
                 folderStore: folderStore,
-                category: selectedCategory?.rawValue,
+                category: selectedDestination?.category,
                 install: folderStore.install
             )
-        case .settings:
+        case .section(.settings):
             SettingsView(gameFolderURL: folderStore.gameFolderURL) {
                 isShowingFolderPicker = true
             }
