@@ -131,6 +131,7 @@ struct InstalledModRecord: Codable, Identifiable {
     let dependencies: [String]
     let currentVersion: String?
     let orphaned: Bool
+    let catalogID: String?
 
     var id: String { name.lowercased() }
 }

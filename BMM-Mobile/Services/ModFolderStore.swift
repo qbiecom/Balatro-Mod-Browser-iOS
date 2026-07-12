@@ -11,6 +11,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var disabledMods: [InstalledMod] = []
     @Published private(set) var installedFolderNames: Set<String> = []
     @Published private(set) var detectedManualMods: [DetectedMod] = []
+    @Published private(set) var updateAvailableNames: Set<String> = []
     @Published private(set) var catalogItems: [CatalogMod] = []
     @Published private(set) var isLoadingCatalog = false
     @Published private(set) var installingModIDs: Set<String> = []
@@ -186,7 +187,8 @@ final class ModFolderStore: ObservableObject {
                 path: detectedMod.folder.id.path,
                 dependencies: [],
                 currentVersion: catalogMod?.version,
-                orphaned: false
+                orphaned: false,
+                catalogID: catalogMod?.id
             )
         )
         refreshMods()
@@ -259,7 +261,8 @@ final class ModFolderStore: ObservableObject {
                     path: localMod.id.path,
                     dependencies: [],
                     currentVersion: catalogMod?.version,
-                    orphaned: false
+                    orphaned: false,
+                    catalogID: catalogMod?.id
                 )
             )
         }
@@ -274,6 +277,27 @@ final class ModFolderStore: ObservableObject {
                 self?.refreshMods()
             }
         }
+    }
+
+    func isUpdateAvailable(for mod: InstalledMod) -> Bool {
+        updateAvailableNames.contains(mod.name.lowercased())
+    }
+
+    func update(_ localMod: InstalledMod) {
+        guard let catalogMod = catalogMods[localMod.name.lowercased()], isUpdateAvailable(for: localMod) else { return }
+        Task { await downloadAndInstall(catalogMod, replacing: true) }
+    }
+
+    private func refreshAvailableUpdates() {
+        updateAvailableNames = Set((enabledMods + disabledMods).compactMap { localMod in
+            guard let record = installedModRegistry.record(named: localMod.name),
+                  let catalogID = record.catalogID,
+                  let catalogMod = catalogMods[catalogID.lowercased()],
+                  let current = record.currentVersion,
+                  let available = catalogMod.version,
+                  current != available else { return nil }
+            return localMod.name.lowercased()
+        })
     }
 
     func refreshCatalogIfNeeded() {
@@ -349,6 +373,7 @@ final class ModFolderStore: ObservableObject {
             catalogItems = uniqueCatalogItems(from: catalogMods)
             persistCatalog()
             refreshMods()
+            refreshAvailableUpdates()
             await refreshDownloadsIfNeeded(force: forceDownloads)
         } catch {
             return
@@ -439,7 +464,7 @@ final class ModFolderStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: detailCacheKey)
     }
 
-    private func downloadAndInstall(_ mod: CatalogMod) async {
+    private func downloadAndInstall(_ mod: CatalogMod, replacing: Bool = false) async {
         guard let modsFolderURL else { return }
 
         installingModIDs.insert(mod.id)
@@ -485,18 +510,29 @@ final class ModFolderStore: ObservableObject {
             let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
             let destinationURL = modsFolderURL.appendingPathComponent(mod.installFolderName, isDirectory: true)
 
-            guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-                throw ModInstallError.alreadyInstalled
+            var backupURL: URL?
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                guard replacing else { throw ModInstallError.alreadyInstalled }
+                let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
+                try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+                let backup = backupsURL.appendingPathComponent("\(mod.installFolderName)-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.moveItem(at: destinationURL, to: backup)
+                backupURL = backup
             }
-
-            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            do {
+                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            } catch {
+                if let backupURL { try? FileManager.default.moveItem(at: backupURL, to: destinationURL) }
+                throw error
+            }
             installedModRegistry.add(
                 InstalledModRecord(
                     name: mod.installFolderName,
                     path: destinationURL.path,
                     dependencies: [],
                     currentVersion: mod.version,
-                    orphaned: false
+                    orphaned: false,
+                    catalogID: mod.id
                 )
             )
             refreshMods()

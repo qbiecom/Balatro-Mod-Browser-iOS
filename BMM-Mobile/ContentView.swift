@@ -163,7 +163,9 @@ struct ContentView: View {
                             mod: mod,
                             presentation: folderStore.presentation(for: mod),
                             folderStore: folderStore,
-                            isEnabled: isEnabled
+                            isEnabled: isEnabled,
+                            isUpdateAvailable: folderStore.isUpdateAvailable(for: mod),
+                            update: { folderStore.update(mod) }
                         ) {
                             folderStore.setEnabled(!isEnabled, for: mod)
                         } delete: {

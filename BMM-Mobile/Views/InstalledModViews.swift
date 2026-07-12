@@ -5,6 +5,8 @@ struct ModTile: View {
     let presentation: ModPresentation
     @ObservedObject var folderStore: ModFolderStore
     let isEnabled: Bool
+    let isUpdateAvailable: Bool
+    let update: () -> Void
     let toggle: () -> Void
     let delete: () -> Void
 
@@ -52,6 +54,14 @@ struct ModTile: View {
                     set: { _ in toggle() }
                 ))
                 .labelsHidden()
+
+                if isUpdateAvailable {
+                    Button(action: update) {
+                        Image(systemName: "arrow.down.circle.fill")
+                    }
+                    .accessibilityLabel("Update \(mod.name)")
+                    .tint(.blue)
+                }
 
                 Button(role: .destructive, action: delete) {
                     Image(systemName: "trash")
