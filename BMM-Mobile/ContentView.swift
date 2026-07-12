@@ -62,7 +62,7 @@ private enum SidebarDestination: Hashable {
 
 enum TileLayout {
     static let width: CGFloat = 250
-    static let height: CGFloat = 288
+    static let height: CGFloat = 348
     static let thumbnailHeight: CGFloat = 132
 }
 
