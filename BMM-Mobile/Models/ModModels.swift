@@ -37,6 +37,8 @@ struct CatalogMod: Codable, Identifiable {
     let thumbnailPath: String?
     let updatedAt: FlexibleTimestamp?
     let description: String?
+    let descriptionHTML: String?
+    let homepage: String?
     let requiresSteamodded: Bool?
     let requiresTalisman: Bool?
     let downloadURL: String?
@@ -45,7 +47,8 @@ struct CatalogMod: Codable, Identifiable {
     let colors: ModColors?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, author, summary, version, categories, description, downloads, colors
+        case id, name, author, summary, version, categories, description, homepage, downloads, colors
+        case descriptionHTML = "description_html"
         case folderName = "folder_name"
         case repository = "repo"
         case thumbnailPath = "thumbnail_url"
@@ -62,10 +65,15 @@ struct CatalogMod: Codable, Identifiable {
     }
 
     var cleanedSummary: String? {
-        let value = (description ?? summary)?
+        let rawValue = descriptionHTML.map(Self.plainText(fromHTML:)) ?? description ?? summary
+        let value = Self.removingLeadingTitle(from: rawValue, matching: name ?? id)?
             .replacingOccurrences(of: "![]", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value?.isEmpty == false ? value : nil
+    }
+
+    var websiteURL: URL? {
+        (repository ?? homepage).flatMap(URL.init(string:))
     }
 
     var thumbnailURL: URL? {
@@ -82,11 +90,46 @@ struct CatalogMod: Codable, Identifiable {
             version: detail.version ?? version, categories: detail.categories ?? categories,
             repository: detail.repository ?? repository, thumbnailPath: detail.thumbnailPath ?? thumbnailPath,
             updatedAt: detail.updatedAt ?? updatedAt, description: detail.description ?? description,
+            descriptionHTML: detail.descriptionHTML ?? descriptionHTML,
+            homepage: detail.homepage ?? homepage,
             requiresSteamodded: detail.requiresSteamodded ?? requiresSteamodded,
             requiresTalisman: detail.requiresTalisman ?? requiresTalisman,
             downloadURL: detail.downloadURL ?? downloadURL, downloads: detail.downloads ?? downloads,
             isDeleted: detail.isDeleted ?? isDeleted, colors: detail.colors ?? colors
         )
+    }
+
+    private static func plainText(fromHTML html: String) -> String {
+        html
+            .replacingOccurrences(of: "<h1>", with: "\n")
+            .replacingOccurrences(of: "</h1>", with: "\n")
+            .replacingOccurrences(of: "<h2>", with: "\n\n")
+            .replacingOccurrences(of: "</h2>", with: "\n")
+            .replacingOccurrences(of: "<p>", with: "")
+            .replacingOccurrences(of: "</p>", with: "\n\n")
+            .replacingOccurrences(of: "<ul>", with: "")
+            .replacingOccurrences(of: "</ul>", with: "")
+            .replacingOccurrences(of: "<li>", with: "• ")
+            .replacingOccurrences(of: "</li>", with: "\n")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+    }
+
+    private static func removingLeadingTitle(from value: String?, matching title: String) -> String? {
+        guard let value else { return nil }
+        var lines = value.components(separatedBy: .newlines)
+        guard let firstIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              normalizedTitle(lines[firstIndex]) == normalizedTitle(title) else {
+            return value
+        }
+        lines.remove(at: firstIndex)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func normalizedTitle(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }
 
@@ -137,6 +180,7 @@ struct ModPresentation {
     let requiresTalisman: Bool
     let downloads: Int?
     let updatedAt: Date?
+    let colors: ModColors?
 }
 
 struct CatalogPage: Decodable {

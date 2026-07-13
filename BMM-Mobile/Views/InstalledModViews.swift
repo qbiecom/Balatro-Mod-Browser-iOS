@@ -28,34 +28,38 @@ struct ModTile: View {
                     .frame(height: layout.thumbnailHeight)
 
                     Text(presentation.title)
-                        .font(.balatroChrome(18))
+                        .font(.balatroChrome(20))
+                        .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.30))
+                        .shadow(color: .black.opacity(0.9), radius: 0, x: 1, y: 1)
                         .lineLimit(2)
 
                     Text(presentation.description)
-                        .font(.balatroChrome(16))
-                        .foregroundStyle(.secondary)
+                        .font(.balatroChrome(15))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(color: .black.opacity(0.85), radius: 0, x: 1, y: 1)
                         .lineLimit(2)
 
                     if let author = presentation.author {
                         Text(author)
-                            .font(.balatroChrome(12))
-                            .foregroundStyle(.secondary)
+                        .font(.balatroChrome(12))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
                             .lineLimit(1)
                     }
 
-                    HStack(spacing: 6) {
-                        StatusChip(
-                            title: isEnabled ? "Enabled" : "Disabled",
-                            color: isEnabled ? .green : .secondary
-                        )
-                        if let category = presentation.categories.first {
-                            StatusChip(title: category, color: .blue)
+                    FlowLayout(spacing: 6) {
+                        ForEach(presentation.categories, id: \.self) { category in
+                            StatusChip(
+                                title: category,
+                                color: .cyan,
+                                backgroundColor: .black,
+                                backgroundOpacity: 0.24
+                            )
                         }
                         if isUpdateAvailable {
                             StatusChip(title: "Update", color: .orange)
                         }
                     }
-                    .lineLimit(1)
                 }
             }
             .buttonStyle(.plain)
@@ -91,7 +95,9 @@ struct ModTile: View {
         }
         .padding(12)
         .frame(width: layout.width, alignment: .topLeading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background {
+            ModTileBackground(colors: presentation.colors, key: presentation.title, isMuted: !isEnabled)
+        }
     }
 }
 
@@ -194,8 +200,17 @@ private struct ModDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(presentation.title)
                     .font(.balatroChrome(28))
-                Text(.init(presentation.description))
-                    .foregroundStyle(.secondary)
+                ForEach(detailSections) { section in
+                    VStack(alignment: .leading, spacing: 8) {
+                        if section.title != "Overview" {
+                            Text(section.title)
+                                .font(.balatroChrome(20))
+                        }
+                        Text(section.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, section.title == "Overview" ? 0 : 8)
+                }
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -225,6 +240,39 @@ private struct ModDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
+
+    private var detailSections: [DetailTextSection] {
+        let lines = presentation.description
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != presentation.title }
+        var sections: [DetailTextSection] = []
+        var title = "Overview"
+        var content: [String] = []
+
+        func appendSection() {
+            guard !content.isEmpty else { return }
+            sections.append(DetailTextSection(title: title, body: content.joined(separator: "\n")))
+        }
+
+        for line in lines {
+            if ["Usage", "Acknowledgements"].contains(line) {
+                appendSection()
+                title = line
+                content = []
+            } else {
+                content.append(line)
+            }
+        }
+        appendSection()
+        return sections.isEmpty ? [DetailTextSection(title: "Overview", body: presentation.description)] : sections
+    }
+}
+
+private struct DetailTextSection: Identifiable {
+    let title: String
+    let body: String
+    var id: String { title }
 }
 
 private struct FlowLayout: Layout {
@@ -283,6 +331,8 @@ struct DetailRow: View {
 struct StatusChip: View {
     let title: String
     let color: Color
+    var backgroundColor: Color? = nil
+    var backgroundOpacity = 0.14
 
     var body: some View {
         Text(title)
@@ -291,7 +341,7 @@ struct StatusChip: View {
             .lineLimit(1)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
-            .background(color.opacity(0.14), in: Capsule())
+            .background((backgroundColor ?? color).opacity(backgroundOpacity), in: Capsule())
     }
 }
 
@@ -308,7 +358,7 @@ struct ModThumbnail: View {
         GeometryReader { proxy in
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.secondary.opacity(0.16))
+                    .fill(Color.secondary.opacity(loader.image == nil ? 0.08 : 0.16))
 
                 if let image = loader.image {
                     Image(uiImage: image)
@@ -336,6 +386,6 @@ struct ModThumbnail: View {
     private var placeholder: some View {
         Image(systemName: "photo")
             .font(.balatroChrome(22))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondary.opacity(0.48))
     }
 }

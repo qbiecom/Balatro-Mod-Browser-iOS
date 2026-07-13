@@ -50,8 +50,6 @@ struct AllModsView: View {
                 }
 
                 HStack {
-                    Text(category.map { "All Mods: \($0)" } ?? "All Mods")
-                        .font(.balatroChrome(22))
                     Text("\(sortedMods.count)")
                         .font(.balatroChrome(12))
                         .foregroundStyle(.secondary)
@@ -179,32 +177,38 @@ struct CatalogTile: View {
                     .frame(height: layout.thumbnailHeight)
 
                     Text(mod.name ?? mod.id)
-                        .font(.balatroChrome(18))
+                        .font(.balatroChrome(20))
+                        .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.30))
+                        .shadow(color: .black.opacity(0.9), radius: 0, x: 1, y: 1)
                         .lineLimit(2)
 
                     Text(mod.cleanedSummary ?? "No description available")
-                        .font(.balatroChrome(16))
-                        .foregroundStyle(.secondary)
+                        .font(.balatroChrome(15))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(color: .black.opacity(0.85), radius: 0, x: 1, y: 1)
                         .lineLimit(2)
 
                     if let author = mod.author {
                         Text(author)
                             .font(.balatroChrome(12))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
                             .lineLimit(1)
                     }
 
                     if let category = mod.categories?.first {
                         Text(category)
                             .font(.balatroChrome(12))
-                            .foregroundStyle(.tint)
+                            .foregroundStyle(.cyan)
+                            .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
                             .lineLimit(1)
                     }
 
                     if let updatedAt = mod.updatedAt, updatedAt.value > 0 {
                         Text("Updated \(Date(timeIntervalSince1970: TimeInterval(updatedAt.value)).formatted(.relative(presentation: .named)))")
                             .font(.balatroChrome(11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.72))
+                            .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
                             .lineLimit(1)
                     }
 
@@ -220,7 +224,8 @@ struct CatalogTile: View {
                         }
                     }
                     .font(.balatroChrome(11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
                     .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -258,18 +263,8 @@ struct CatalogTile: View {
         }
         .padding(12)
         .frame(width: layout.width, alignment: .topLeading)
-        .background(cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var cardBackground: AnyShapeStyle {
-        if let colors = mod.colors {
-            return AnyShapeStyle(LinearGradient(
-                colors: [Color(hex: colors.first).opacity(0.28), Color(hex: colors.second).opacity(0.22)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ))
-        } else {
-            return AnyShapeStyle(.thinMaterial)
+        .background {
+            ModTileBackground(colors: mod.colors, key: mod.name ?? mod.id, isMuted: false)
         }
     }
 }
@@ -319,7 +314,7 @@ struct CatalogModDetailView: View {
                     .font(.balatroChrome(18))
             }
 
-            if let repository = displayedMod.repository, let url = URL(string: repository) {
+            if let url = displayedMod.websiteURL {
                 Link(destination: url) {
                     Label("Open Repository", systemImage: "arrow.up.right.square")
                 }
@@ -354,7 +349,7 @@ struct CatalogModDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                if let repository = displayedMod.repository, let url = URL(string: repository) {
+                if let url = displayedMod.websiteURL {
                     Link(destination: url) {
                         Label("Open Repository", systemImage: "arrow.up.right.square")
                     }
@@ -400,17 +395,5 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
         case .lastUpdated: "Last Updated"
         case .downloads: "Downloads"
         }
-    }
-}
-
-private extension Color {
-    init(hex: String) {
-        let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        var number: UInt64 = 0
-        Scanner(string: value).scanHexInt64(&number)
-        let red = Double((number >> 16) & 0xFF) / 255
-        let green = Double((number >> 8) & 0xFF) / 255
-        let blue = Double(number & 0xFF) / 255
-        self.init(red: red, green: green, blue: blue)
     }
 }

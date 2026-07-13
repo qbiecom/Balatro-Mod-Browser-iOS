@@ -118,12 +118,13 @@ final class ModFolderStore: ObservableObject {
             author: catalogMod?.author,
             version: catalogMod?.version,
             categories: catalogMod?.categories ?? [],
-            repositoryURL: catalogMod?.repository.flatMap(URL.init(string:)),
+            repositoryURL: catalogMod?.websiteURL,
             thumbnailURL: catalogMod?.thumbnailURL,
             requiresSteamodded: catalogMod?.requiresSteamodded ?? false,
             requiresTalisman: catalogMod?.requiresTalisman ?? false,
             downloads: catalogMod?.downloads?.total,
-            updatedAt: catalogMod?.updatedAt.map { Date(timeIntervalSince1970: TimeInterval($0.value)) }
+            updatedAt: catalogMod?.updatedAt.map { Date(timeIntervalSince1970: TimeInterval($0.value)) },
+            colors: catalogMod?.colors
         )
     }
 
@@ -335,6 +336,7 @@ final class ModFolderStore: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: detailCacheKey),
               let cached = try? JSONDecoder().decode([String: DetailCacheEntry].self, from: data) else { return }
         detailCache = cached
+        applyCachedDetailsToCatalog()
     }
 
     private func loadCachedDownloads() {
@@ -374,6 +376,8 @@ final class ModFolderStore: ObservableObject {
                     self.latestCatalogUpdate = newest
                 }
             }
+
+            applyCachedDetailsToCatalog()
 
             catalogRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
@@ -451,9 +455,21 @@ final class ModFolderStore: ObservableObject {
 
     private func index(_ mod: CatalogMod, into dictionary: inout [String: CatalogMod]) {
         dictionary[mod.id.lowercased()] = mod
+        if let name = mod.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            dictionary[name.lowercased()] = mod
+        }
         if let folderName = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty {
             dictionary[folderName.lowercased()] = mod
         }
+    }
+
+    private func applyCachedDetailsToCatalog() {
+        let now = Date()
+        for entry in detailCache.values where now.timeIntervalSince(entry.refreshedAt) < detailCacheLifetime {
+            guard let current = catalogMods[entry.mod.id.lowercased()] else { continue }
+            index(current.merged(with: entry.mod), into: &catalogMods)
+        }
+        catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
     private func remove(_ mod: CatalogMod) {
