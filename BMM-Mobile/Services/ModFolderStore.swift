@@ -498,6 +498,8 @@ final class ModFolderStore: ObservableObject {
         }
 
         do {
+            let folderName = try validatedInstallFolderName(for: mod)
+            let destinationURL = try containedChildURL(named: folderName, in: modsFolderURL)
             let downloadURL = try await resolveDownloadURL(for: mod.id)
             let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
             guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
@@ -531,14 +533,15 @@ final class ModFolderStore: ObservableObject {
                 (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
             }
             let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
-            let destinationURL = modsFolderURL.appendingPathComponent(mod.installFolderName, isDirectory: true)
-
             var backupURL: URL?
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 guard replacing else { throw ModInstallError.alreadyInstalled }
                 let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
                 try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
-                let backup = backupsURL.appendingPathComponent("\(mod.installFolderName)-\(UUID().uuidString)", isDirectory: true)
+                let backup = try containedChildURL(
+                    named: "\(folderName)-\(UUID().uuidString)",
+                    in: backupsURL
+                )
                 try FileManager.default.moveItem(at: destinationURL, to: backup)
                 backupURL = backup
             }
@@ -550,7 +553,7 @@ final class ModFolderStore: ObservableObject {
             }
             installedModRegistry.add(
                 InstalledModRecord(
-                    name: mod.installFolderName,
+                    name: folderName,
                     path: destinationURL.path,
                     dependencies: [],
                     currentVersion: mod.version,
@@ -616,6 +619,40 @@ final class ModFolderStore: ObservableObject {
         return components.reduce(destinationURL) { url, component in
             url.appendingPathComponent(String(component), isDirectory: false)
         }
+    }
+
+    private func validatedInstallFolderName(for mod: CatalogMod) throws -> String {
+        let catalogValue = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = (catalogValue?.isEmpty == false ? catalogValue : mod.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let reservedNames: Set<String> = [
+            ".", "..", "mods", "disabled mods", ".bmm backups",
+            "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+            "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+        ]
+        let deviceName = candidate.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""
+
+        guard !candidate.isEmpty,
+              !candidate.hasPrefix("."),
+              !candidate.contains("/"),
+              !candidate.contains("\\"),
+              !candidate.contains(":"),
+              candidate.rangeOfCharacter(from: .controlCharacters) == nil,
+              !reservedNames.contains(candidate.lowercased()),
+              !reservedNames.contains(deviceName) else {
+            throw ModInstallError.unsafeFolderName
+        }
+        return candidate
+    }
+
+    private func containedChildURL(named name: String, in rootURL: URL) throws -> URL {
+        let root = rootURL.standardizedFileURL
+        let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL
+        guard child.deletingLastPathComponent().path == root.path else {
+            throw ModInstallError.unsafeFolderName
+        }
+        return child
     }
 
     private func resolveDownloadURL(for id: String) async throws -> URL {

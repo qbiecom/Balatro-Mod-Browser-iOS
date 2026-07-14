@@ -218,6 +218,7 @@ struct InstalledModRecord: Codable, Identifiable {
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled
+    case unsafeFolderName
     case unsupportedArchive
     case unsafeArchive
     case archiveTooLarge
@@ -227,6 +228,7 @@ enum ModInstallError: LocalizedError {
         switch self {
         case .downloadFailed: "The mod download could not be completed."
         case .alreadyInstalled: "A mod with this folder name is already installed."
+        case .unsafeFolderName: "The catalog supplied an unsafe mod folder name."
         case .unsupportedArchive: "This archive format is not supported. Please use a ZIP release."
         case .unsafeArchive: "This archive contains an unsafe file path."
         case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
