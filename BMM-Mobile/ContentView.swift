@@ -191,6 +191,23 @@ struct ContentView: View {
             Text(folderStore.errorMessage)
         }
         .confirmationDialog(
+            "Use This Game Folder?",
+            isPresented: Binding(
+                get: { folderStore.pendingGameFolderSelection != nil },
+                set: { if !$0 { folderStore.cancelPendingGameFolderSelection() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Use This Folder") {
+                folderStore.confirmPendingGameFolderSelection()
+            }
+            Button("Cancel", role: .cancel) {
+                folderStore.cancelPendingGameFolderSelection()
+            }
+        } message: {
+            Text(gameFolderConfirmationMessage)
+        }
+        .confirmationDialog(
             "Delete \(modPendingDeletion?.name ?? "this mod")?",
             isPresented: Binding(
                 get: { modPendingDeletion != nil },
@@ -253,6 +270,11 @@ struct ContentView: View {
             return "\(prefix)This mod requires a Talisman-compatible provider. Choose \(choices)."
         }
         return "This mod also requires \(names.joined(separator: ", ")). They will be installed first."
+    }
+
+    private var gameFolderConfirmationMessage: String {
+        guard let selection = folderStore.pendingGameFolderSelection else { return "" }
+        return "The selected folder contains config and Mods, but is not named game. BMM Mobile will only manage mods in:\n\(selection.url.path)"
     }
 
     @ViewBuilder

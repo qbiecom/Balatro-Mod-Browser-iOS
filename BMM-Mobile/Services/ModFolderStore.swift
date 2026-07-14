@@ -17,6 +17,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var installingModIDs: Set<String> = []
     @Published private(set) var installingModName: String?
     @Published var dependencyInstallRequest: DependencyInstallRequest?
+    @Published var pendingGameFolderSelection: GameFolderSelection?
     @Published var isShowingError = false
     @Published private(set) var errorMessage = ""
 
@@ -40,10 +41,6 @@ final class ModFolderStore: ObservableObject {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
     }
 
-    private var disabledModsFolderURL: URL? {
-        gameFolderURL?.appendingPathComponent("Disabled Mods", isDirectory: true)
-    }
-
     var totalModCount: Int { enabledMods.count + disabledMods.count }
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
 
@@ -62,25 +59,40 @@ final class ModFolderStore: ObservableObject {
     func handleFolderSelection(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
-        stopAccessingCurrentFolder()
-
         guard url.startAccessingSecurityScopedResource() else {
             showError("iOS did not grant access to this folder. Please try selecting it again.")
             return
         }
 
         do {
-            try prepareGameFolder(at: url)
-            let bookmark = try url.bookmarkData(options: .minimalBookmark)
-            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
-            activeGameFolderURL = url
-            gameFolderURL = url
-            refreshMods()
-            refreshCatalogIfNeeded()
+            switch try gameFolderValidation(at: url) {
+            case .valid:
+                try activateGameFolder(at: url)
+            case .requiresConfirmation:
+                pendingGameFolderSelection = GameFolderSelection(url: url)
+            }
         } catch {
             url.stopAccessingSecurityScopedResource()
             showError(error.localizedDescription)
         }
+    }
+
+    func confirmPendingGameFolderSelection() {
+        guard let selection = pendingGameFolderSelection else { return }
+        pendingGameFolderSelection = nil
+
+        do {
+            _ = try gameFolderValidation(at: selection.url)
+            try activateGameFolder(at: selection.url)
+        } catch {
+            selection.url.stopAccessingSecurityScopedResource()
+            showError(error.localizedDescription)
+        }
+    }
+
+    func cancelPendingGameFolderSelection() {
+        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
+        pendingGameFolderSelection = nil
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
@@ -227,6 +239,7 @@ final class ModFolderStore: ObservableObject {
 
     private func restoreFolderAccess() {
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
+        var restoredURL: URL?
 
         do {
             var isStale = false
@@ -241,8 +254,11 @@ final class ModFolderStore: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: bookmarkKey)
                 return
             }
+            restoredURL = url
 
-            try prepareGameFolder(at: url)
+            guard try gameFolderValidation(at: url) == .valid else {
+                throw GameFolderError.invalidLayout
+            }
 
             if isStale {
                 let refreshedBookmark = try url.bookmarkData(options: .minimalBookmark)
@@ -254,47 +270,52 @@ final class ModFolderStore: ObservableObject {
             refreshMods()
             refreshCatalogIfNeeded()
         } catch {
+            restoredURL?.stopAccessingSecurityScopedResource()
             stopAccessingCurrentFolder()
             UserDefaults.standard.removeObject(forKey: bookmarkKey)
         }
     }
 
-    private func prepareGameFolder(at url: URL) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(
-            at: url.appendingPathComponent("Mods", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: url.appendingPathComponent("Disabled Mods", isDirectory: true),
-            withIntermediateDirectories: true
-        )
+    private func activateGameFolder(at url: URL) throws {
+        if activeGameFolderURL?.standardizedFileURL == url.standardizedFileURL {
+            url.stopAccessingSecurityScopedResource()
+            return
+        }
+
+        let bookmark = try url.bookmarkData(options: .minimalBookmark)
+        stopAccessingCurrentFolder()
+        UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+        activeGameFolderURL = url
+        gameFolderURL = url
+        refreshMods()
+        refreshCatalogIfNeeded()
+    }
+
+    private func gameFolderValidation(at url: URL) throws -> GameFolderValidation {
+        let resourceValues = try url.resourceValues(forKeys: [.isDirectoryKey])
+        guard resourceValues.isDirectory == true else {
+            throw GameFolderError.notDirectory
+        }
+
+        let configURL = url.appendingPathComponent("config", isDirectory: true)
+        let modsURL = url.appendingPathComponent("Mods", isDirectory: true)
+        let hasConfig = (try? configURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let hasMods = (try? modsURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        guard hasConfig && hasMods else {
+            throw GameFolderError.invalidLayout
+        }
+
+        return url.lastPathComponent.caseInsensitiveCompare("game") == .orderedSame
+            ? .valid
+            : .requiresConfirmation
     }
 
     private func refreshMods() {
-        migrateLegacyDisabledMods()
         let allMods = mods(in: modsFolderURL)
         enabledMods = allMods.filter { !isIgnored($0) }
         disabledMods = allMods.filter(isIgnored)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
         installedModRegistry.reconcile(existingNames: installedFolderNames)
-    }
-
-    private func migrateLegacyDisabledMods() {
-        guard let legacyFolder = disabledModsFolderURL, let modsFolderURL else { return }
-        for mod in mods(in: legacyFolder) {
-            let destination = modsFolderURL.appendingPathComponent(mod.name, isDirectory: true)
-            guard !FileManager.default.fileExists(atPath: destination.path) else { continue }
-            do {
-                try FileManager.default.moveItem(at: mod.id, to: destination)
-                FileManager.default.createFile(
-                    atPath: destination.appendingPathComponent(".lovelyignore").path,
-                    contents: Data()
-                )
-            } catch {
-                continue
-            }
-        }
     }
 
     private func isIgnored(_ mod: InstalledMod) -> Bool {

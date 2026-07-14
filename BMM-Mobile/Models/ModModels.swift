@@ -224,6 +224,31 @@ struct DependencyInstallRequest: Identifiable {
     var id: String { mod.id }
 }
 
+struct GameFolderSelection: Identifiable {
+    let url: URL
+
+    var id: String { url.standardizedFileURL.path }
+}
+
+enum GameFolderValidation: Equatable {
+    case valid
+    case requiresConfirmation
+}
+
+enum GameFolderError: LocalizedError {
+    case notDirectory
+    case invalidLayout
+
+    var errorDescription: String? {
+        switch self {
+        case .notDirectory:
+            "Please select the Lovely Mobile Maker game folder, not a file."
+        case .invalidLayout:
+            "This is not a Lovely Mobile Maker game folder. Select the folder named game that contains config and Mods."
+        }
+    }
+}
+
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled
