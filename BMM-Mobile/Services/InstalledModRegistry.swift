@@ -39,6 +39,13 @@ final class InstalledModRegistry {
         load().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
+    func dependents(of dependency: String) -> [InstalledModRecord] {
+        let normalizedDependency = dependency.normalizedDependencyName
+        return load().filter { record in
+            record.dependencies.contains { $0.normalizedDependencyName == normalizedDependency }
+        }
+    }
+
     private func load() -> [InstalledModRecord] {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
         return (try? JSONDecoder().decode([InstalledModRecord].self, from: data)) ?? []
@@ -52,5 +59,11 @@ final class InstalledModRegistry {
         } catch {
             return
         }
+    }
+}
+
+extension String {
+    var normalizedDependencyName: String {
+        lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }

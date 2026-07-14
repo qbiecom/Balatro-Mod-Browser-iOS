@@ -210,11 +210,49 @@ struct ContentView: View {
         } message: {
             Text("This permanently removes the mod folder and its contents.")
         }
+        .confirmationDialog(
+            "Install Required Mods?",
+            isPresented: Binding(
+                get: { folderStore.dependencyInstallRequest != nil },
+                set: { if !$0 { folderStore.cancelDependencyInstall() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let request = folderStore.dependencyInstallRequest {
+                if request.talismanProviderOptions.isEmpty {
+                    Button("Install Required Mods") {
+                        folderStore.confirmDependencyInstall()
+                    }
+                } else {
+                    ForEach(request.talismanProviderOptions) { provider in
+                        Button("Use \(provider.name ?? provider.id)") {
+                            folderStore.confirmDependencyInstall(talismanProvider: provider)
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                folderStore.cancelDependencyInstall()
+            }
+        } message: {
+            Text(dependencyInstallMessage)
+        }
         .task {
             folderStore.refreshCatalogIfNeeded()
         }
         .preferredColorScheme(appTheme.colorScheme)
         .font(.balatroChrome(16))
+    }
+
+    private var dependencyInstallMessage: String {
+        guard let request = folderStore.dependencyInstallRequest else { return "" }
+        let names = request.dependencies.map { $0.name ?? $0.id }
+        if !request.talismanProviderOptions.isEmpty {
+            let choices = request.talismanProviderOptions.map { $0.name ?? $0.id }.joined(separator: " or ")
+            let prefix = names.isEmpty ? "" : "It also needs \(names.joined(separator: ", ")). "
+            return "\(prefix)This mod requires a Talisman-compatible provider. Choose \(choices)."
+        }
+        return "This mod also requires \(names.joined(separator: ", ")). They will be installed first."
     }
 
     @ViewBuilder

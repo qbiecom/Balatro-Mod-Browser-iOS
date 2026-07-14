@@ -16,6 +16,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var catalogErrorMessage: String?
     @Published private(set) var installingModIDs: Set<String> = []
     @Published private(set) var installingModName: String?
+    @Published var dependencyInstallRequest: DependencyInstallRequest?
     @Published var isShowingError = false
     @Published private(set) var errorMessage = ""
 
@@ -100,6 +101,11 @@ final class ModFolderStore: ObservableObject {
 
     func delete(_ mod: InstalledMod) {
         do {
+            let dependents = installedModRegistry.dependents(of: mod.name)
+            guard dependents.isEmpty else {
+                showError("\(mod.name) is required by: \(dependents.map(\.name).joined(separator: ", ")). Remove those mods first.")
+                return
+            }
             try FileManager.default.removeItem(at: mod.id)
             installedModRegistry.remove(named: mod.name)
             refreshMods()
@@ -194,9 +200,29 @@ final class ModFolderStore: ObservableObject {
               !isInstalling(mod),
               installingModIDs.isEmpty else { return }
 
+        beginInstall(mod, replacing: false)
+    }
+
+    func confirmDependencyInstall(talismanProvider: CatalogMod? = nil) {
+        guard let request = dependencyInstallRequest else { return }
+        dependencyInstallRequest = nil
+
+        guard let dependencies = resolvedDependencies(for: request.mod, talismanProvider: talismanProvider) else { return }
+
         Task {
-            await downloadAndInstall(mod)
+            for dependency in dependencies where !isInstalled(dependency) {
+                guard await downloadAndInstall(dependency) else { return }
+            }
+            _ = await downloadAndInstall(
+                request.mod,
+                replacing: request.replacing,
+                dependencies: dependencies.map(\.installFolderName)
+            )
         }
+    }
+
+    func cancelDependencyInstall() {
+        dependencyInstallRequest = nil
     }
 
     private func restoreFolderAccess() {
@@ -291,7 +317,7 @@ final class ModFolderStore: ObservableObject {
 
     func update(_ localMod: InstalledMod) {
         guard let catalogMod = catalogMods[localMod.name.lowercased()], isUpdateAvailable(for: localMod) else { return }
-        Task { await downloadAndInstall(catalogMod, replacing: true) }
+        beginInstall(catalogMod, replacing: true)
     }
 
     private func refreshAvailableUpdates() {
@@ -487,7 +513,91 @@ final class ModFolderStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: detailCacheKey)
     }
 
-    private func downloadAndInstall(_ mod: CatalogMod, replacing: Bool = false) async {
+    private func beginInstall(_ mod: CatalogMod, replacing: Bool) {
+        if let talismanOptions = uninstalledTalismanProviderOptions(for: mod) {
+            dependencyInstallRequest = DependencyInstallRequest(
+                mod: mod,
+                dependencies: steamoddedDependency(for: mod).flatMap { isInstalled($0) ? nil : $0 }.map { [$0] } ?? [],
+                talismanProviderOptions: talismanOptions,
+                replacing: replacing
+            )
+            return
+        }
+
+        guard let dependencies = resolvedDependencies(for: mod) else { return }
+        let missingDependencies = dependencies.filter { !isInstalled($0) }
+        if !missingDependencies.isEmpty {
+            dependencyInstallRequest = DependencyInstallRequest(
+                mod: mod,
+                dependencies: missingDependencies,
+                talismanProviderOptions: [],
+                replacing: replacing
+            )
+            return
+        }
+
+        Task {
+            _ = await downloadAndInstall(
+                mod,
+                replacing: replacing,
+                dependencies: dependencies.map(\.installFolderName)
+            )
+        }
+    }
+
+    private func resolvedDependencies(for mod: CatalogMod, talismanProvider: CatalogMod? = nil) -> [CatalogMod]? {
+        var dependencies: [CatalogMod] = []
+        if let steamodded = steamoddedDependency(for: mod) {
+            dependencies.append(steamodded)
+        } else if mod.requiresSteamodded == true {
+            showError("\(mod.name ?? mod.id) requires Steamodded, but it is not available in the current catalog.")
+            return nil
+        }
+
+        if mod.requiresTalisman == true {
+            let providers = talismanProviderOptions()
+            guard !providers.isEmpty else {
+                showError("\(mod.name ?? mod.id) requires Talisman or Amulet, but neither is available in the current catalog.")
+                return nil
+            }
+            guard let provider = talismanProvider
+                ?? providers.first(where: { isInstalled($0) }) else {
+                return nil
+            }
+            dependencies.append(provider)
+        }
+
+        return dependencies
+    }
+
+    private func steamoddedDependency(for mod: CatalogMod) -> CatalogMod? {
+        guard mod.requiresSteamodded == true else { return nil }
+        return catalogDependency(named: "Steamodded")
+    }
+
+    private func uninstalledTalismanProviderOptions(for mod: CatalogMod) -> [CatalogMod]? {
+        guard mod.requiresTalisman == true else { return nil }
+        let providers = talismanProviderOptions()
+        guard !providers.isEmpty else { return nil }
+        return providers.contains(where: isInstalled) ? nil : providers
+    }
+
+    private func talismanProviderOptions() -> [CatalogMod] {
+        ["Talisman", "Amulet"].compactMap { catalogDependency(named: $0) }
+    }
+
+    private func catalogDependency(named name: String) -> CatalogMod? {
+        catalogItems.first {
+            $0.name?.normalizedDependencyName == name.normalizedDependencyName
+                || $0.id.normalizedDependencyName == name.normalizedDependencyName
+        }
+    }
+
+    private func downloadAndInstall(
+        _ mod: CatalogMod,
+        replacing: Bool = false,
+        dependencies: [String] = []
+    ) async -> Bool {
         guard let modsFolderURL else { return }
 
         installingModIDs.insert(mod.id)
@@ -564,7 +674,7 @@ final class ModFolderStore: ObservableObject {
                 InstalledModRecord(
                     name: folderName,
                     path: destinationURL.path,
-                    dependencies: [],
+                    dependencies: dependencies,
                     currentVersion: mod.version,
                     orphaned: false,
                     catalogID: mod.id
@@ -575,8 +685,10 @@ final class ModFolderStore: ObservableObject {
             }
             refreshMods()
             refreshAvailableUpdates()
+            return true
         } catch {
             showError(error.localizedDescription)
+            return false
         }
     }
 

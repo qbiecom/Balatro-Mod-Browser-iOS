@@ -215,6 +215,15 @@ struct InstalledModRecord: Codable, Identifiable {
     var id: String { name.lowercased() }
 }
 
+struct DependencyInstallRequest: Identifiable {
+    let mod: CatalogMod
+    let dependencies: [CatalogMod]
+    let talismanProviderOptions: [CatalogMod]
+    let replacing: Bool
+
+    var id: String { mod.id }
+}
+
 enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled
