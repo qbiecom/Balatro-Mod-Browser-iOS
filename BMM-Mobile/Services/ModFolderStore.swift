@@ -598,7 +598,7 @@ final class ModFolderStore: ObservableObject {
         replacing: Bool = false,
         dependencies: [String] = []
     ) async -> Bool {
-        guard let modsFolderURL else { return }
+        guard let modsFolderURL else { return false }
 
         installingModIDs.insert(mod.id)
         installingModName = mod.name ?? mod.id
