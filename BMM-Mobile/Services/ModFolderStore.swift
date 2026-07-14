@@ -570,6 +570,9 @@ final class ModFolderStore: ObservableObject {
                     catalogID: mod.id
                 )
             )
+            if let backupURL {
+                try? FileManager.default.removeItem(at: backupURL)
+            }
             refreshMods()
             refreshAvailableUpdates()
         } catch {
