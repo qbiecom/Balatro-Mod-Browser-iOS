@@ -623,8 +623,12 @@ final class ModFolderStore: ObservableObject {
 
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String {
         let catalogValue = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidate = (catalogValue?.isEmpty == false ? catalogValue : mod.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate: String
+        if let catalogValue, !catalogValue.isEmpty {
+            candidate = catalogValue
+        } else {
+            candidate = mod.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         let reservedNames: Set<String> = [
             ".", "..", "mods", "disabled mods", ".bmm backups",
