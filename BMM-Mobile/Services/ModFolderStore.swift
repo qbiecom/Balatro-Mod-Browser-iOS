@@ -534,6 +534,9 @@ final class ModFolderStore: ObservableObject {
             }
             let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
             var backupURL: URL?
+            let wasDisabled = replacing && FileManager.default.fileExists(
+                atPath: destinationURL.appendingPathComponent(".lovelyignore").path
+            )
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 guard replacing else { throw ModInstallError.alreadyInstalled }
                 let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
@@ -547,7 +550,13 @@ final class ModFolderStore: ObservableObject {
             }
             do {
                 try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+                if wasDisabled {
+                    try Data().write(to: destinationURL.appendingPathComponent(".lovelyignore"), options: .atomic)
+                }
             } catch {
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try? FileManager.default.removeItem(at: destinationURL)
+                }
                 if let backupURL { try? FileManager.default.moveItem(at: backupURL, to: destinationURL) }
                 throw error
             }
