@@ -287,9 +287,11 @@ private struct FlowLayout: Layout {
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
+        var maximumRowWidth: CGFloat = 0
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
             if x + size.width > width, x > 0 {
+                maximumRowWidth = max(maximumRowWidth, x - spacing)
                 x = 0
                 y += rowHeight + spacing
                 rowHeight = 0
@@ -297,7 +299,8 @@ private struct FlowLayout: Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
-        return CGSize(width: min(width, max(0, x - spacing)), height: y + rowHeight)
+        maximumRowWidth = max(maximumRowWidth, max(0, x - spacing))
+        return CGSize(width: min(width, maximumRowWidth), height: y + rowHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
