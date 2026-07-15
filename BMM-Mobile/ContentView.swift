@@ -241,13 +241,11 @@ struct ContentView: View {
                     Button("Install Required Mods") {
                         folderStore.confirmDependencyInstall()
                     }
-                    .disabled(!folderStore.isInstallerAvailable)
                 } else {
                     ForEach(request.talismanProviderOptions) { provider in
                         Button("Use \(provider.name ?? provider.id)") {
                             folderStore.confirmDependencyInstall(talismanProvider: provider)
                         }
-                        .disabled(!folderStore.isInstallerAvailable)
                     }
                 }
             }
