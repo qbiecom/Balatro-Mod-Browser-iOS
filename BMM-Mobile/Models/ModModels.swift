@@ -5,13 +5,26 @@ struct FlexibleTimestamp: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+        let decoded: Int64
         if let value = try? container.decode(Int64.self) {
-            self.value = value
-        } else if let string = try? container.decode(String.self), let value = Int64(string) {
-            self.value = value
+            decoded = value
+        } else if let string = try? container.decode(String.self),
+                  string.unicodeScalars.allSatisfy({ CharacterSet.decimalDigits.contains($0) }),
+                  let value = Int64(string) {
+            decoded = value
         } else {
-            self.value = 0
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected a positive Unix timestamp integer or decimal string."
+            )
         }
+        guard decoded > 0 else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Timestamp must be a positive Unix timestamp."
+            )
+        }
+        value = decoded
     }
 
     func encode(to encoder: Encoder) throws {
