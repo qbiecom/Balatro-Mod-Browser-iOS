@@ -1,11 +1,8 @@
 import Combine
 import Foundation
-import ZIPFoundation
 
 @MainActor
 final class ModFolderStore: ObservableObject {
-    private static let maximumArchiveFileCount = 10_000
-    private static let maximumArchiveUncompressedSize: UInt64 = 2 * 1024 * 1024 * 1024
     @Published private(set) var gameFolderURL: URL?
     @Published private(set) var enabledMods: [InstalledMod] = []
     @Published private(set) var disabledMods: [InstalledMod] = []
@@ -25,8 +22,7 @@ final class ModFolderStore: ObservableObject {
     private let catalogCacheKey = "bmiCatalogCacheV2"
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
-    private let installedModRegistry = InstalledModRegistry()
-    private let updateRecoveryStore = UpdateRecoveryStore()
+    private let fileService = ModFileService()
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
     private let downloadsCacheLifetime: TimeInterval = 60 * 15
@@ -48,10 +44,6 @@ final class ModFolderStore: ObservableObject {
             return String(describing: identifier)
         }
         return gameFolderURL.standardizedFileURL.path.lowercased()
-    }
-
-    private func normalizedModPath(_ url: URL) -> String {
-        url.standardizedFileURL.path.lowercased()
     }
 
     var totalModCount: Int { enabledMods.count + disabledMods.count }
@@ -109,43 +101,29 @@ final class ModFolderStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
-        do {
-            let ignoreURL = mod.id.appendingPathComponent(".lovelyignore")
-            if enabled {
-                if FileManager.default.fileExists(atPath: ignoreURL.path) {
-                    try FileManager.default.removeItem(at: ignoreURL)
-                }
-            } else {
-                FileManager.default.createFile(atPath: ignoreURL.path, contents: Data())
+        Task {
+            do {
+                try await fileService.setEnabled(enabled, modURL: mod.id)
+                refreshMods()
+            } catch is CancellationError {
+                return
+            } catch {
+                showError(error.localizedDescription)
             }
-            refreshMods()
-        } catch {
-            showError(error.localizedDescription)
         }
     }
 
     func delete(_ mod: InstalledMod) {
-        do {
-            guard let gameFolderID else { return }
-            let modPath = normalizedModPath(mod.id)
-            let dependents = try installedModRegistry.dependents(of: mod.name, in: gameFolderID)
-            guard dependents.isEmpty else {
-                showError("\(mod.name) is required by: \(dependents.map(\.name).joined(separator: ", ")). Remove those mods first.")
-                return
-            }
-            let pendingDeletionURL = mod.id.deletingLastPathComponent()
-                .appendingPathComponent(".deleting_\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.moveItem(at: mod.id, to: pendingDeletionURL)
+        guard let gameFolderID else { return }
+        Task {
             do {
-                try installedModRegistry.remove(gameFolderID: gameFolderID, modPath: modPath)
-                try FileManager.default.removeItem(at: pendingDeletionURL)
+                try await fileService.delete(mod: mod, gameFolderID: gameFolderID)
+                refreshMods()
+            } catch is CancellationError {
+                return
             } catch {
-                try? FileManager.default.moveItem(at: pendingDeletionURL, to: mod.id)
-                throw error
+                showError(error.localizedDescription)
             }
-            refreshMods()
-        } catch {
-            showError(error.localizedDescription)
         }
     }
 
@@ -337,50 +315,29 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func refreshMods() {
-        let allMods = mods(in: modsFolderURL)
-        enabledMods = allMods.filter { !isIgnored($0) }
-        disabledMods = allMods.filter(isIgnored)
-        installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
-        guard let gameFolderID else { return }
-        do {
-            try installedModRegistry.reconcile(
-                gameFolderID: gameFolderID,
-                existingPaths: Set(allMods.map { normalizedModPath($0.id) })
-            )
-        } catch {
-            showError(error.localizedDescription)
+        guard let modsFolderURL, let gameFolderID else { return }
+        Task {
+            do {
+                let result = try await fileService.scan(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
+                enabledMods = result.enabled
+                disabledMods = result.disabled
+                installedFolderNames = result.folderNames
+                refreshAvailableUpdates()
+            } catch is CancellationError {
+                return
+            } catch {
+                showError(error.localizedDescription)
+            }
         }
     }
 
     /// Completes an update after a restart, or restores the original if its replacement never arrived.
     private func recoverInterruptedUpdates() {
         guard let gameFolderID else { return }
-        for transaction in updateRecoveryStore.load() {
-            guard transaction.replacementRecord.gameFolderID == gameFolderID else { continue }
-            let destinationURL = URL(fileURLWithPath: transaction.destinationPath)
-            let backupURL = URL(fileURLWithPath: transaction.backupPath)
-
-            do {
-                if !FileManager.default.fileExists(atPath: destinationURL.path) {
-                    guard FileManager.default.fileExists(atPath: backupURL.path) else { continue }
-                    try FileManager.default.moveItem(at: backupURL, to: destinationURL)
-                    try installedModRegistry.add(transaction.originalRecord)
-                    try updateRecoveryStore.remove(transaction)
-                } else {
-                    try installedModRegistry.add(transaction.replacementRecord)
-                    if FileManager.default.fileExists(atPath: backupURL.path) {
-                        try FileManager.default.removeItem(at: backupURL)
-                    }
-                    try updateRecoveryStore.remove(transaction)
-                }
-            } catch {
-                continue
-            }
+        Task {
+            await fileService.recoverInterruptedUpdates(gameFolderID: gameFolderID)
+            refreshMods()
         }
-    }
-
-    private func isIgnored(_ mod: InstalledMod) -> Bool {
-        FileManager.default.fileExists(atPath: mod.id.appendingPathComponent(".lovelyignore").path)
     }
 
     private func startBackgroundReindex() {
@@ -403,23 +360,17 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func refreshAvailableUpdates() {
-        do {
-            updateAvailableNames = Set(try (enabledMods + disabledMods).compactMap { localMod in
-                guard let gameFolderID,
-                      let record = try installedModRegistry.record(
-                    gameFolderID: gameFolderID,
-                    modPath: normalizedModPath(localMod.id)
-                      ),
-                  let catalogID = record.catalogID,
-                  let catalogMod = catalogMods[catalogID.lowercased()],
-                  let current = record.currentVersion,
-                  let available = catalogMod.version,
-                  current != available else { return nil }
-                return localMod.name.lowercased()
-            })
-        } catch {
-            updateAvailableNames = []
-            showError(error.localizedDescription)
+        guard let gameFolderID else { return }
+        let mods = enabledMods + disabledMods
+        Task {
+            do {
+                let records = try await fileService.updateRecords(for: mods, gameFolderID: gameFolderID)
+                updateAvailableNames = Set(records.compactMap { record in
+                    guard let catalogID = record.catalogID, let catalogMod = catalogMods[catalogID.lowercased()], let current = record.currentVersion, let available = catalogMod.version, current != available else { return nil }
+                    return record.name.lowercased()
+                })
+            } catch is CancellationError { return
+            } catch { updateAvailableNames = []; showError(error.localizedDescription) }
         }
     }
 
@@ -703,248 +654,22 @@ final class ModFolderStore: ObservableObject {
         }
 
         do {
-            let destinationURL: URL
-            let folderName: String
-            if replacing {
-                guard let replacementModURL else { throw ModInstallError.invalidUpdateTarget }
-                destinationURL = try validatedImmediateModChild(replacementModURL, in: modsFolderURL)
-                folderName = destinationURL.lastPathComponent
-            } else {
-                folderName = try validatedInstallFolderName(for: mod)
-                destinationURL = try containedChildURL(named: folderName, in: modsFolderURL)
-            }
             let downloadURL = try await resolveDownloadURL(for: mod.id)
             let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
             guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
                 throw ModInstallError.downloadFailed
             }
 
-            let archiveURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-            try FileManager.default.moveItem(at: temporaryURL, to: archiveURL)
-            defer { try? FileManager.default.removeItem(at: archiveURL) }
-
-            guard try isZIPArchive(at: archiveURL) else {
-                throw ModInstallError.unsupportedArchive
-            }
-
-            let stagingURL = modsFolderURL.appendingPathComponent(".staging_\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: stagingURL, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: stagingURL) }
-
-            try extractZIPArchive(at: archiveURL, to: stagingURL)
-
-            let entries = try FileManager.default.contentsOfDirectory(
-                at: stagingURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            let folders = entries.filter {
-                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-            }
-            let hasRootFiles = entries.contains {
-                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
-            }
-            let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
-            var updateTransaction: UpdateTransaction?
-            let wasDisabled = replacing && FileManager.default.fileExists(
-                atPath: destinationURL.appendingPathComponent(".lovelyignore").path
-            )
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                guard replacing else { throw ModInstallError.alreadyInstalled }
-                let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
-                try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
-                let backup = try containedChildURL(
-                    named: "\(folderName)-\(UUID().uuidString)",
-                    in: backupsURL
-                )
-                let normalizedPath = normalizedModPath(destinationURL)
-                let priorRecord = try installedModRegistry.record(gameFolderID: gameFolderID, modPath: normalizedPath)
-                    ?? InstalledModRecord(
-                        gameFolderID: gameFolderID,
-                        name: folderName,
-                        path: destinationURL.path,
-                        normalizedModPath: normalizedPath,
-                        dependencies: [],
-                        currentVersion: nil,
-                        orphaned: false,
-                        catalogID: nil
-                    )
-                let transaction = UpdateTransaction(
-                    destinationPath: destinationURL.path,
-                    backupPath: backup.path,
-                    replacementRecord: InstalledModRecord(
-                        gameFolderID: gameFolderID,
-                        name: folderName,
-                        path: destinationURL.path,
-                        normalizedModPath: normalizedPath,
-                        dependencies: dependencies,
-                        currentVersion: mod.version,
-                        orphaned: false,
-                        catalogID: mod.id
-                    ),
-                    originalRecord: priorRecord
-                )
-                try updateRecoveryStore.save(transaction)
-                try FileManager.default.moveItem(at: destinationURL, to: backup)
-                updateTransaction = transaction
-            }
-            do {
-                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-                if wasDisabled {
-                    try Data().write(to: destinationURL.appendingPathComponent(".lovelyignore"), options: .atomic)
-                }
-            } catch {
-                if FileManager.default.fileExists(atPath: destinationURL.path) {
-                    try? FileManager.default.removeItem(at: destinationURL)
-                }
-                if let updateTransaction {
-                    try? FileManager.default.moveItem(
-                        at: URL(fileURLWithPath: updateTransaction.backupPath),
-                        to: destinationURL
-                    )
-                    if FileManager.default.fileExists(atPath: destinationURL.path) {
-                        try? updateRecoveryStore.remove(updateTransaction)
-                    }
-                }
-                throw error
-            }
-            let replacementRecord = InstalledModRecord(
-                gameFolderID: gameFolderID,
-                name: folderName,
-                path: destinationURL.path,
-                normalizedModPath: normalizedModPath(destinationURL),
-                dependencies: dependencies,
-                currentVersion: mod.version,
-                orphaned: false,
-                catalogID: mod.id
-            )
-            do {
-                try installedModRegistry.add(replacementRecord)
-            } catch {
-                try? FileManager.default.removeItem(at: destinationURL)
-                if let updateTransaction {
-                    try? FileManager.default.moveItem(
-                        at: URL(fileURLWithPath: updateTransaction.backupPath),
-                        to: destinationURL
-                    )
-                    if FileManager.default.fileExists(atPath: destinationURL.path) {
-                        try? updateRecoveryStore.remove(updateTransaction)
-                    }
-                }
-                throw error
-            }
-            if let updateTransaction {
-                try FileManager.default.removeItem(at: URL(fileURLWithPath: updateTransaction.backupPath))
-                try updateRecoveryStore.remove(updateTransaction)
-            }
+            try await fileService.install(downloadURL: temporaryURL, mod: mod, dependencies: dependencies, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, replacing: replacing ? replacementModURL : nil)
             refreshMods()
             refreshAvailableUpdates()
             return true
+        } catch is CancellationError {
+            return false
         } catch {
             showError(error.localizedDescription)
             return false
         }
-    }
-
-    private func isZIPArchive(at url: URL) throws -> Bool {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let magic = try handle.read(upToCount: 4) ?? Data()
-        return magic.starts(with: [0x50, 0x4B, 0x03, 0x04])
-            || magic.starts(with: [0x50, 0x4B, 0x05, 0x06])
-            || magic.starts(with: [0x50, 0x4B, 0x07, 0x08])
-    }
-
-    private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL) throws {
-        let archive = try Archive(url: archiveURL, accessMode: .read)
-        var fileCount = 0
-        var expandedSize: UInt64 = 0
-
-        for entry in archive {
-            fileCount += 1
-            guard fileCount <= Self.maximumArchiveFileCount else { throw ModInstallError.tooManyArchiveFiles }
-            expandedSize += entry.uncompressedSize
-            guard expandedSize <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
-
-            let outputURL = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
-
-            switch entry.type {
-            case .directory:
-                try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
-            case .file:
-                try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                _ = try archive.extract(entry, to: outputURL, bufferSize: 64 * 1024)
-            case .symlink:
-                throw ModInstallError.unsafeArchive
-            @unknown default:
-                throw ModInstallError.unsafeArchive
-            }
-        }
-    }
-
-    private func safeArchiveOutputURL(for archivePath: String, in destinationURL: URL) throws -> URL {
-        // ZIP entries are conventionally slash-delimited, even when created on Windows.
-        let normalized = archivePath.replacingOccurrences(of: "\\", with: "/")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
-        guard !components.isEmpty else { return destinationURL }
-        guard components.allSatisfy({ component in
-            component != "." && component != ".." && !component.contains(":")
-        }) else {
-            throw ModInstallError.unsafeArchive
-        }
-
-        return components.reduce(destinationURL) { url, component in
-            url.appendingPathComponent(String(component), isDirectory: false)
-        }
-    }
-
-    private func validatedInstallFolderName(for mod: CatalogMod) throws -> String {
-        let catalogValue = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidate: String
-        if let catalogValue, !catalogValue.isEmpty {
-            candidate = catalogValue
-        } else {
-            candidate = mod.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        let reservedNames: Set<String> = [
-            ".", "..", "mods", "disabled mods", ".bmm backups",
-            "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-            "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
-        ]
-        let deviceName = candidate.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""
-
-        guard !candidate.isEmpty,
-              !candidate.hasPrefix("."),
-              !candidate.contains("/"),
-              !candidate.contains("\\"),
-              !candidate.contains(":"),
-              candidate.rangeOfCharacter(from: .controlCharacters) == nil,
-              !reservedNames.contains(candidate.lowercased()),
-              !reservedNames.contains(deviceName) else {
-            throw ModInstallError.unsafeFolderName
-        }
-        return candidate
-    }
-
-    private func containedChildURL(named name: String, in rootURL: URL) throws -> URL {
-        let root = rootURL.standardizedFileURL
-        let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL
-        guard child.deletingLastPathComponent().path == root.path else {
-            throw ModInstallError.unsafeFolderName
-        }
-        return child
-    }
-
-    private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL {
-        let destinationURL = url.standardizedFileURL
-        guard destinationURL.deletingLastPathComponent() == modsFolderURL.standardizedFileURL,
-              (try? destinationURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-            throw ModInstallError.invalidUpdateTarget
-        }
-        return destinationURL
     }
 
     private func resolveDownloadURL(for id: String) async throws -> URL {
@@ -1009,26 +734,6 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func mods(in folderURL: URL?) -> [InstalledMod] {
-        guard let folderURL else { return [] }
-
-        do {
-            return try FileManager.default.contentsOfDirectory(
-                at: folderURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            .filter { url in
-                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-            }
-            .filter { $0.lastPathComponent.caseInsensitiveCompare("lovely") != .orderedSame }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            .map { InstalledMod(id: $0, name: $0.lastPathComponent) }
-        } catch {
-            return []
-        }
-    }
-
     private func stopAccessingCurrentFolder() {
         activeGameFolderURL?.stopAccessingSecurityScopedResource()
         activeGameFolderURL = nil
@@ -1041,65 +746,5 @@ final class ModFolderStore: ObservableObject {
     private func showError(_ message: String) {
         errorMessage = message
         isShowingError = true
-    }
-}
-
-private struct UpdateTransaction: Codable, Identifiable {
-    let id: UUID
-    let destinationPath: String
-    let backupPath: String
-    let replacementRecord: InstalledModRecord
-    let originalRecord: InstalledModRecord
-
-    init(
-        destinationPath: String,
-        backupPath: String,
-        replacementRecord: InstalledModRecord,
-        originalRecord: InstalledModRecord
-    ) {
-        id = UUID()
-        self.destinationPath = destinationPath
-        self.backupPath = backupPath
-        self.replacementRecord = replacementRecord
-        self.originalRecord = originalRecord
-    }
-}
-
-/// Stores recovery records outside the user-selected folder so they survive a failed update.
-private final class UpdateRecoveryStore {
-    private let directoryURL: URL
-
-    init(fileManager: FileManager = .default) {
-        directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("BMM Mobile", isDirectory: true)
-            .appendingPathComponent("update-transactions", isDirectory: true)
-    }
-
-    func load() -> [UpdateTransaction] {
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return urls.compactMap { url in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? JSONDecoder().decode(UpdateTransaction.self, from: data)
-        }
-    }
-
-    func save(_ transaction: UpdateTransaction) throws {
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(transaction)
-        try data.write(to: fileURL(for: transaction), options: .atomic)
-    }
-
-    func remove(_ transaction: UpdateTransaction) throws {
-        let url = fileURL(for: transaction)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
-    }
-
-    private func fileURL(for transaction: UpdateTransaction) -> URL {
-        directoryURL.appendingPathComponent("\(transaction.id.uuidString).json")
     }
 }

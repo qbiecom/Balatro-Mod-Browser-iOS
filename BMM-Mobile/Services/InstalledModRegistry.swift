@@ -1,7 +1,7 @@
 import Foundation
 
 /// Persists the installation metadata independently of the externally selected game folder.
-final class InstalledModRegistry {
+nonisolated final class InstalledModRegistry {
     private let fileURL: URL
     private let fileManager: FileManager
 
@@ -78,7 +78,7 @@ final class InstalledModRegistry {
     }
 }
 
-extension String {
+nonisolated extension String {
     var normalizedDependencyName: String {
         lowercased().filter { $0.isLetter || $0.isNumber }
     }
