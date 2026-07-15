@@ -11,7 +11,8 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         "codeload.github.com",
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com",
-        "github-releases.githubusercontent.com"
+        "github-releases.githubusercontent.com",
+        "gitlab.com"
     ]
 
     private(set) var session: URLSession!
