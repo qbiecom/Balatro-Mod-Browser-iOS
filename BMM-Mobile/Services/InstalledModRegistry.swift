@@ -11,19 +11,19 @@ final class InstalledModRegistry {
             .appendingPathComponent("installed-mods.json")
     }
 
-    func add(_ record: InstalledModRecord) {
+    func add(_ record: InstalledModRecord) throws {
         var records = load()
         records.removeAll { $0.name.caseInsensitiveCompare(record.name) == .orderedSame }
         records.append(record)
-        save(records)
+        try save(records)
     }
 
     func remove(named name: String) {
-        save(load().filter { $0.name.caseInsensitiveCompare(name) != .orderedSame })
+        try? save(load().filter { $0.name.caseInsensitiveCompare(name) != .orderedSame })
     }
 
     func reconcile(existingNames: Set<String>) {
-        save(load().map { record in
+        try? save(load().map { record in
             InstalledModRecord(
                 name: record.name,
                 path: record.path,
@@ -51,14 +51,10 @@ final class InstalledModRegistry {
         return (try? JSONDecoder().decode([InstalledModRecord].self, from: data)) ?? []
     }
 
-    private func save(_ records: [InstalledModRecord]) {
-        do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(records)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            return
-        }
+    private func save(_ records: [InstalledModRecord]) throws {
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(records)
+        try data.write(to: fileURL, options: .atomic)
     }
 }
 

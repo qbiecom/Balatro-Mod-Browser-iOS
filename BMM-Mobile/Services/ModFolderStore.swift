@@ -26,6 +26,7 @@ final class ModFolderStore: ObservableObject {
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
     private let installedModRegistry = InstalledModRegistry()
+    private let updateRecoveryStore = UpdateRecoveryStore()
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
     private let downloadsCacheLifetime: TimeInterval = 60 * 15
@@ -267,6 +268,7 @@ final class ModFolderStore: ObservableObject {
 
             activeGameFolderURL = url
             gameFolderURL = url
+            recoverInterruptedUpdates()
             refreshMods()
             refreshCatalogIfNeeded()
         } catch {
@@ -287,6 +289,7 @@ final class ModFolderStore: ObservableObject {
         UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
         activeGameFolderURL = url
         gameFolderURL = url
+        recoverInterruptedUpdates()
         refreshMods()
         refreshCatalogIfNeeded()
     }
@@ -316,6 +319,31 @@ final class ModFolderStore: ObservableObject {
         disabledMods = allMods.filter(isIgnored)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
         installedModRegistry.reconcile(existingNames: installedFolderNames)
+    }
+
+    /// Completes an update after a restart, or restores the original if its replacement never arrived.
+    private func recoverInterruptedUpdates() {
+        for transaction in updateRecoveryStore.load() {
+            let destinationURL = URL(fileURLWithPath: transaction.destinationPath)
+            let backupURL = URL(fileURLWithPath: transaction.backupPath)
+
+            do {
+                if !FileManager.default.fileExists(atPath: destinationURL.path) {
+                    guard FileManager.default.fileExists(atPath: backupURL.path) else { continue }
+                    try FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                    try installedModRegistry.add(transaction.originalRecord)
+                    try updateRecoveryStore.remove(transaction)
+                } else {
+                    try installedModRegistry.add(transaction.replacementRecord)
+                    if FileManager.default.fileExists(atPath: backupURL.path) {
+                        try FileManager.default.removeItem(at: backupURL)
+                    }
+                    try updateRecoveryStore.remove(transaction)
+                }
+            } catch {
+                continue
+            }
+        }
     }
 
     private func isIgnored(_ mod: InstalledMod) -> Bool {
@@ -664,7 +692,7 @@ final class ModFolderStore: ObservableObject {
                 (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
             }
             let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
-            var backupURL: URL?
+            var updateTransaction: UpdateTransaction?
             let wasDisabled = replacing && FileManager.default.fileExists(
                 atPath: destinationURL.appendingPathComponent(".lovelyignore").path
             )
@@ -676,8 +704,31 @@ final class ModFolderStore: ObservableObject {
                     named: "\(folderName)-\(UUID().uuidString)",
                     in: backupsURL
                 )
+                let priorRecord = installedModRegistry.record(named: folderName)
+                    ?? InstalledModRecord(
+                        name: folderName,
+                        path: destinationURL.path,
+                        dependencies: [],
+                        currentVersion: nil,
+                        orphaned: false,
+                        catalogID: nil
+                    )
+                let transaction = UpdateTransaction(
+                    destinationPath: destinationURL.path,
+                    backupPath: backup.path,
+                    replacementRecord: InstalledModRecord(
+                        name: folderName,
+                        path: destinationURL.path,
+                        dependencies: dependencies,
+                        currentVersion: mod.version,
+                        orphaned: false,
+                        catalogID: mod.id
+                    ),
+                    originalRecord: priorRecord
+                )
+                try updateRecoveryStore.save(transaction)
                 try FileManager.default.moveItem(at: destinationURL, to: backup)
-                backupURL = backup
+                updateTransaction = transaction
             }
             do {
                 try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
@@ -688,21 +739,29 @@ final class ModFolderStore: ObservableObject {
                 if FileManager.default.fileExists(atPath: destinationURL.path) {
                     try? FileManager.default.removeItem(at: destinationURL)
                 }
-                if let backupURL { try? FileManager.default.moveItem(at: backupURL, to: destinationURL) }
+                if let updateTransaction {
+                    try? FileManager.default.moveItem(
+                        at: URL(fileURLWithPath: updateTransaction.backupPath),
+                        to: destinationURL
+                    )
+                    if FileManager.default.fileExists(atPath: destinationURL.path) {
+                        try? updateRecoveryStore.remove(updateTransaction)
+                    }
+                }
                 throw error
             }
-            installedModRegistry.add(
-                InstalledModRecord(
-                    name: folderName,
-                    path: destinationURL.path,
-                    dependencies: dependencies,
-                    currentVersion: mod.version,
-                    orphaned: false,
-                    catalogID: mod.id
-                )
+            let replacementRecord = InstalledModRecord(
+                name: folderName,
+                path: destinationURL.path,
+                dependencies: dependencies,
+                currentVersion: mod.version,
+                orphaned: false,
+                catalogID: mod.id
             )
-            if let backupURL {
-                try? FileManager.default.removeItem(at: backupURL)
+            try installedModRegistry.add(replacementRecord)
+            if let updateTransaction {
+                try FileManager.default.removeItem(at: URL(fileURLWithPath: updateTransaction.backupPath))
+                try updateRecoveryStore.remove(updateTransaction)
             }
             refreshMods()
             refreshAvailableUpdates()
@@ -898,5 +957,65 @@ final class ModFolderStore: ObservableObject {
     private func showError(_ message: String) {
         errorMessage = message
         isShowingError = true
+    }
+}
+
+private struct UpdateTransaction: Codable, Identifiable {
+    let id: UUID
+    let destinationPath: String
+    let backupPath: String
+    let replacementRecord: InstalledModRecord
+    let originalRecord: InstalledModRecord
+
+    init(
+        destinationPath: String,
+        backupPath: String,
+        replacementRecord: InstalledModRecord,
+        originalRecord: InstalledModRecord
+    ) {
+        id = UUID()
+        self.destinationPath = destinationPath
+        self.backupPath = backupPath
+        self.replacementRecord = replacementRecord
+        self.originalRecord = originalRecord
+    }
+}
+
+/// Stores recovery records outside the user-selected folder so they survive a failed update.
+private final class UpdateRecoveryStore {
+    private let directoryURL: URL
+
+    init(fileManager: FileManager = .default) {
+        directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BMM Mobile", isDirectory: true)
+            .appendingPathComponent("update-transactions", isDirectory: true)
+    }
+
+    func load() -> [UpdateTransaction] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(UpdateTransaction.self, from: data)
+        }
+    }
+
+    func save(_ transaction: UpdateTransaction) throws {
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(transaction)
+        try data.write(to: fileURL(for: transaction), options: .atomic)
+    }
+
+    func remove(_ transaction: UpdateTransaction) throws {
+        let url = fileURL(for: transaction)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    private func fileURL(for transaction: UpdateTransaction) -> URL {
+        directoryURL.appendingPathComponent("\(transaction.id.uuidString).json")
     }
 }
