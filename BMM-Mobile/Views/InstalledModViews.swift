@@ -15,10 +15,8 @@ struct ModTile: View {
         VStack(alignment: .leading, spacing: 10) {
             NavigationLink {
                 ModDetailView(
-                    mod: mod,
-                    folderStore: folderStore,
-                    isEnabled: isEnabled,
-                    isUpdateAvailable: isUpdateAvailable
+                    installedModID: mod.id,
+                    folderStore: folderStore
                 )
             } label: {
                 VStack(alignment: .leading, spacing: 10) {
@@ -104,19 +102,25 @@ struct ModTile: View {
 private struct ModDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    let mod: InstalledMod
+    let installedModID: URL
     @ObservedObject var folderStore: ModFolderStore
-    let isEnabled: Bool
-    let isUpdateAvailable: Bool
+    private var mod: InstalledMod? { folderStore.installedMod(id: installedModID) }
+    private var isEnabled: Bool { mod.map(folderStore.isEnabled) ?? false }
+    private var isUpdateAvailable: Bool { mod.map(folderStore.isUpdateAvailable(for:)) ?? false }
 
     private var presentation: ModPresentation {
-        folderStore.presentation(for: mod)
+        guard let mod else {
+            return ModPresentation(title: installedModID.lastPathComponent, description: "This mod folder is no longer available.", author: nil, version: nil, categories: [], repositoryURL: nil, thumbnailURL: nil, requiresSteamodded: false, requiresTalisman: false, downloads: nil, updatedAt: nil, colors: nil)
+        }
+        return folderStore.presentation(for: mod)
     }
 
     var body: some View {
         ScrollView {
             Group {
-                if horizontalSizeClass == .compact {
+                if mod == nil {
+                    ContentUnavailableView("Mod No Longer Available", systemImage: "folder.badge.questionmark", description: Text("The mod directory was removed or is no longer accessible."))
+                } else if horizontalSizeClass == .compact {
                     VStack(alignment: .leading, spacing: 16) {
                         sidebar
                         details
@@ -134,7 +138,7 @@ private struct ModDetailView: View {
         .navigationTitle("Mod Details")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            await folderStore.loadDetail(for: mod)
+            await folderStore.loadDetail(forInstalledModID: installedModID)
         }
     }
 
@@ -214,7 +218,7 @@ private struct ModDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                DetailRow(label: "Folder", value: mod.name)
+                DetailRow(label: "Folder", value: mod?.name ?? installedModID.lastPathComponent)
 
                 if let version = presentation.version, !version.isEmpty {
                     DetailRow(label: "Version", value: version)

@@ -157,6 +157,15 @@ final class ModFolderStore: ObservableObject {
         )
     }
 
+    func installedMod(id: URL) -> InstalledMod? {
+        let path = id.standardizedFileURL.path.lowercased()
+        return (enabledMods + disabledMods).first { $0.id.standardizedFileURL.path.lowercased() == path }
+    }
+
+    func isEnabled(_ mod: InstalledMod) -> Bool {
+        enabledMods.contains { $0.id.standardizedFileURL.path.lowercased() == mod.id.standardizedFileURL.path.lowercased() }
+    }
+
     func forceRefreshCatalog() {
         guard !isLoadingCatalog else { return }
 
@@ -187,6 +196,11 @@ final class ModFolderStore: ObservableObject {
     func loadDetail(for mod: InstalledMod) async {
         guard let catalogMod = catalogMod(matchingLocalName: mod.name) else { return }
         await loadDetail(for: catalogMod)
+    }
+
+    func loadDetail(forInstalledModID id: URL) async {
+        guard let mod = installedMod(id: id) else { return }
+        await loadDetail(for: mod)
     }
 
     func catalogMod(id: String) -> CatalogMod? {
