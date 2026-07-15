@@ -3,6 +3,19 @@ import Foundation
 
 @MainActor
 final class ModFolderStore: ObservableObject {
+    enum InstallerAvailability: Equatable {
+        case available
+        case noGameFolder
+        case busy
+
+        var message: String {
+            switch self {
+            case .available: "Ready to install mods."
+            case .noGameFolder: "Choose a Lovely Mobile Maker game folder before installing mods."
+            case .busy: "Another install or update is in progress."
+            }
+        }
+    }
     @Published private(set) var gameFolderURL: URL?
     @Published private(set) var enabledMods: [InstalledMod] = []
     @Published private(set) var disabledMods: [InstalledMod] = []
@@ -53,6 +66,12 @@ final class ModFolderStore: ObservableObject {
 
     var totalModCount: Int { enabledMods.count + disabledMods.count }
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
+    var installerAvailability: InstallerAvailability {
+        if gameFolderURL == nil { return .noGameFolder }
+        if isFolderOperationBusy { return .busy }
+        return .available
+    }
+    var isInstallerAvailable: Bool { installerAvailability == .available }
 
     init() {
         loadCachedCatalog()
@@ -234,10 +253,18 @@ final class ModFolderStore: ObservableObject {
     }
 
     func install(_ mod: CatalogMod) {
-        guard gameFolderURL != nil,
-              !isInstalled(mod),
-              !isInstalling(mod),
-              installingModIDs.isEmpty else { return }
+        guard isInstallerAvailable else {
+            showError(installerAvailability.message)
+            return
+        }
+        guard !isInstalled(mod) else {
+            showError("\(mod.name ?? mod.id) is already installed.")
+            return
+        }
+        guard !isInstalling(mod), installingModIDs.isEmpty else {
+            showError("Another install or update is already in progress.")
+            return
+        }
 
         beginInstall(mod, replacing: false)
     }

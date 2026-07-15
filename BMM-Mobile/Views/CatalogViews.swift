@@ -251,6 +251,10 @@ struct CatalogTile: View {
                             Text("Installing...")
                         }
                         .frame(maxWidth: .infinity)
+                    } else if folderStore.installerAvailability == .noGameFolder {
+                        Label("Choose Game Folder", systemImage: "folder.badge.plus")
+                            .frame(maxWidth: .infinity)
+                            .font(.balatroChrome(15))
                     } else {
                         Label("Install", systemImage: "arrow.down.circle")
                             .frame(maxWidth: .infinity)
@@ -258,7 +262,8 @@ struct CatalogTile: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isInstalling)
+                .disabled(!folderStore.isInstallerAvailable)
+                .accessibilityHint(folderStore.installerAvailability.message)
             }
         }
         .padding(12)
@@ -324,14 +329,16 @@ struct CatalogModDetailView: View {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
-                Button {
-                    folderStore.install(displayedMod)
-                } label: {
-                    Label("Install Mod", systemImage: "arrow.down.circle")
+                Button { folderStore.install(displayedMod) } label: {
+                    Label(
+                        folderStore.installerAvailability == .noGameFolder ? "Choose Game Folder" : "Install Mod",
+                        systemImage: folderStore.installerAvailability == .noGameFolder ? "folder.badge.plus" : "arrow.down.circle"
+                    )
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(folderStore.isInstalling(displayedMod))
+                .disabled(!folderStore.isInstallerAvailable)
+                .accessibilityHint(folderStore.installerAvailability.message)
             }
         }
         .padding(16)
