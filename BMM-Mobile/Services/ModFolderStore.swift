@@ -243,7 +243,8 @@ final class ModFolderStore: ObservableObject {
             _ = await downloadAndInstall(
                 request.mod,
                 replacing: request.replacing,
-                dependencies: dependencies.map(\.installFolderName)
+                dependencies: dependencies.map(\.installFolderName),
+                replacementModURL: request.replacementModURL
             )
         }
     }
@@ -386,7 +387,7 @@ final class ModFolderStore: ObservableObject {
 
     func update(_ localMod: InstalledMod) {
         guard let catalogMod = catalogMods[localMod.name.lowercased()], isUpdateAvailable(for: localMod) else { return }
-        beginInstall(catalogMod, replacing: true)
+        beginInstall(catalogMod, replacing: true, replacementModURL: localMod.id)
     }
 
     private func refreshAvailableUpdates() {
@@ -586,13 +587,14 @@ final class ModFolderStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: detailCacheKey)
     }
 
-    private func beginInstall(_ mod: CatalogMod, replacing: Bool) {
+    private func beginInstall(_ mod: CatalogMod, replacing: Bool, replacementModURL: URL? = nil) {
         if let talismanOptions = uninstalledTalismanProviderOptions(for: mod) {
             dependencyInstallRequest = DependencyInstallRequest(
                 mod: mod,
                 dependencies: steamoddedDependency(for: mod).flatMap { isInstalled($0) ? nil : $0 }.map { [$0] } ?? [],
                 talismanProviderOptions: talismanOptions,
-                replacing: replacing
+                replacing: replacing,
+                replacementModURL: replacementModURL
             )
             return
         }
@@ -604,7 +606,8 @@ final class ModFolderStore: ObservableObject {
                 mod: mod,
                 dependencies: missingDependencies,
                 talismanProviderOptions: [],
-                replacing: replacing
+                replacing: replacing,
+                replacementModURL: replacementModURL
             )
             return
         }
@@ -613,7 +616,8 @@ final class ModFolderStore: ObservableObject {
             _ = await downloadAndInstall(
                 mod,
                 replacing: replacing,
-                dependencies: dependencies.map(\.installFolderName)
+                dependencies: dependencies.map(\.installFolderName),
+                replacementModURL: replacementModURL
             )
         }
     }
@@ -669,7 +673,8 @@ final class ModFolderStore: ObservableObject {
     private func downloadAndInstall(
         _ mod: CatalogMod,
         replacing: Bool = false,
-        dependencies: [String] = []
+        dependencies: [String] = [],
+        replacementModURL: URL? = nil
     ) async -> Bool {
         guard let modsFolderURL, let gameFolderID else { return false }
 
@@ -681,8 +686,16 @@ final class ModFolderStore: ObservableObject {
         }
 
         do {
-            let folderName = try validatedInstallFolderName(for: mod)
-            let destinationURL = try containedChildURL(named: folderName, in: modsFolderURL)
+            let destinationURL: URL
+            let folderName: String
+            if replacing {
+                guard let replacementModURL else { throw ModInstallError.invalidUpdateTarget }
+                destinationURL = try validatedImmediateModChild(replacementModURL, in: modsFolderURL)
+                folderName = destinationURL.lastPathComponent
+            } else {
+                folderName = try validatedInstallFolderName(for: mod)
+                destinationURL = try containedChildURL(named: folderName, in: modsFolderURL)
+            }
             let downloadURL = try await resolveDownloadURL(for: mod.id)
             let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
             guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
@@ -892,6 +905,15 @@ final class ModFolderStore: ObservableObject {
             throw ModInstallError.unsafeFolderName
         }
         return child
+    }
+
+    private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL {
+        let destinationURL = url.standardizedFileURL
+        guard destinationURL.deletingLastPathComponent() == modsFolderURL.standardizedFileURL,
+              (try? destinationURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            throw ModInstallError.invalidUpdateTarget
+        }
+        return destinationURL
     }
 
     private func resolveDownloadURL(for id: String) async throws -> URL {

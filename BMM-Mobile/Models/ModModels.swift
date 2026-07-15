@@ -258,6 +258,7 @@ struct DependencyInstallRequest: Identifiable {
     let dependencies: [CatalogMod]
     let talismanProviderOptions: [CatalogMod]
     let replacing: Bool
+    let replacementModURL: URL?
 
     var id: String { mod.id }
 }
@@ -291,6 +292,7 @@ enum ModInstallError: LocalizedError {
     case downloadFailed
     case alreadyInstalled
     case unsafeFolderName
+    case invalidUpdateTarget
     case unsupportedArchive
     case unsafeArchive
     case archiveTooLarge
@@ -301,6 +303,7 @@ enum ModInstallError: LocalizedError {
         case .downloadFailed: "The mod download could not be completed."
         case .alreadyInstalled: "A mod with this folder name is already installed."
         case .unsafeFolderName: "The catalog supplied an unsafe mod folder name."
+        case .invalidUpdateTarget: "The selected mod folder is no longer an immediate child of this game's Mods folder."
         case .unsupportedArchive: "This archive format is not supported. Please use a ZIP release."
         case .unsafeArchive: "This archive contains an unsafe file path."
         case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
