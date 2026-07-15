@@ -51,6 +51,7 @@ final class ModFolderStore: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, Never>?
     private var updatesTask: Task<Void, Never>?
+    private var folderTransitionTask: Task<Void, Never>?
     private var modsFolderPresenter: ModsFolderPresenter?
     private var isApplicationActive = true
     private var installTask: Task<Void, Never>?
@@ -84,7 +85,7 @@ final class ModFolderStore: ObservableObject {
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
     var installerAvailability: InstallerAvailability {
         if gameFolderURL == nil { return .noGameFolder }
-        if isFolderOperationBusy { return .busy }
+        if isFolderOperationBusy || folderTransitionTask != nil { return .busy }
         return .available
     }
     var isInstallerAvailable: Bool { installerAvailability == .available }
@@ -99,6 +100,7 @@ final class ModFolderStore: ObservableObject {
         scanTask?.cancel()
         recoveryTask?.cancel()
         updatesTask?.cancel()
+        folderTransitionTask?.cancel()
         installTask?.cancel()
         if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
         pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
@@ -106,7 +108,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func handleFolderSelection(_ result: Result<[URL], Error>) {
-        guard !isFolderOperationBusy else {
+        guard !isFolderOperationBusy, folderTransitionTask == nil else {
             showError("Wait for the current install or update to finish before changing the game folder.")
             return
         }
@@ -120,7 +122,7 @@ final class ModFolderStore: ObservableObject {
         do {
             switch try gameFolderValidation(at: url) {
             case .valid:
-                try activateGameFolder(at: url)
+                beginActivatingGameFolder(at: url)
             case .requiresConfirmation:
                 pendingGameFolderSelection = GameFolderSelection(url: url)
             }
@@ -131,13 +133,13 @@ final class ModFolderStore: ObservableObject {
     }
 
     func confirmPendingGameFolderSelection() {
-        guard !isFolderOperationBusy else { return }
+        guard !isFolderOperationBusy, folderTransitionTask == nil else { return }
         guard let selection = pendingGameFolderSelection else { return }
         pendingGameFolderSelection = nil
 
         do {
             _ = try gameFolderValidation(at: selection.url)
-            try activateGameFolder(at: selection.url)
+            beginActivatingGameFolder(at: selection.url)
         } catch {
             selection.url.stopAccessingSecurityScopedResource()
             showError(error.localizedDescription)
@@ -150,10 +152,11 @@ final class ModFolderStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
+        guard let modsFolderURL, let gameFolderID else { return }
         guard reserveFolderOperation() else { return }
         startInstallTask {
             do {
-                try await self.fileService.setEnabled(enabled, modURL: mod.id)
+                try await self.fileService.setEnabled(enabled, modURL: mod.id, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
                 self.refreshMods()
             } catch is CancellationError {
                 return
@@ -347,28 +350,48 @@ final class ModFolderStore: ObservableObject {
                 UserDefaults.standard.set(refreshedBookmark, forKey: bookmarkKey)
             }
 
-            activeGameFolderURL = url
-            gameFolderURL = url
-            observeModsFolder()
-            recoverInterruptedUpdates()
-            refreshMods()
-            refreshCatalogIfNeeded()
+            beginActivatingGameFolder(at: url, bookmark: nil)
         } catch {
             restoredURL?.stopAccessingSecurityScopedResource()
-            stopAccessingCurrentFolder()
             UserDefaults.standard.removeObject(forKey: bookmarkKey)
         }
     }
 
-    private func activateGameFolder(at url: URL) throws {
+    private func beginActivatingGameFolder(at url: URL, bookmark suppliedBookmark: Data? = nil) {
+        guard folderTransitionTask == nil else {
+            url.stopAccessingSecurityScopedResource()
+            showError("Wait for the current folder change to finish before choosing another folder.")
+            return
+        }
+
+        folderTransitionTask = Task { [weak self] in
+            guard let self else {
+                url.stopAccessingSecurityScopedResource()
+                return
+            }
+            do {
+                let bookmark = try suppliedBookmark ?? url.bookmarkData(options: .minimalBookmark)
+                await activateGameFolder(at: url, bookmark: bookmark)
+            } catch {
+                url.stopAccessingSecurityScopedResource()
+                showError(error.localizedDescription)
+            }
+            folderTransitionTask = nil
+        }
+    }
+
+    private func activateGameFolder(at url: URL, bookmark: Data?) async {
         if activeGameFolderURL?.standardizedFileURL == url.standardizedFileURL {
             url.stopAccessingSecurityScopedResource()
             return
         }
 
-        let bookmark = try url.bookmarkData(options: .minimalBookmark)
-        stopAccessingCurrentFolder()
-        UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+        await stopAccessingCurrentFolder()
+        guard !Task.isCancelled else {
+            url.stopAccessingSecurityScopedResource()
+            return
+        }
+        if let bookmark { UserDefaults.standard.set(bookmark, forKey: bookmarkKey) }
         activeGameFolderURL = url
         gameFolderURL = url
         observeModsFolder()
@@ -399,9 +422,11 @@ final class ModFolderStore: ObservableObject {
     private func refreshMods() {
         guard isApplicationActive, let modsFolderURL, let gameFolderID else { return }
         let generation = gameFolderGeneration
-        scanTask?.cancel()
+        let previousTask = scanTask
         scanTask = Task { [weak self] in
-            guard let self else { return }
+            previousTask?.cancel()
+            await previousTask?.value
+            guard !Task.isCancelled, let self else { return }
             do {
                 let result = try await fileService.scan(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
                 guard !Task.isCancelled, generation == gameFolderGeneration else { return }
@@ -424,8 +449,10 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func requestModsRefresh() {
-        refreshTask?.cancel()
+        let previousTask = refreshTask
         refreshTask = Task { [weak self] in
+            previousTask?.cancel()
+            await previousTask?.value
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
             self?.refreshMods()
@@ -446,9 +473,11 @@ final class ModFolderStore: ObservableObject {
     private func recoverInterruptedUpdates() {
         guard let gameFolderID, let modsFolderURL else { return }
         let generation = gameFolderGeneration
-        recoveryTask?.cancel()
+        let previousTask = recoveryTask
         recoveryTask = Task { [weak self] in
-            guard let self else { return }
+            previousTask?.cancel()
+            await previousTask?.value
+            guard !Task.isCancelled, let self else { return }
             // Integration seam for the recovery API owned by ModFileService.
             await fileService.recoverInterruptedUpdates(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
             guard !Task.isCancelled, generation == gameFolderGeneration else { return }
@@ -490,9 +519,11 @@ final class ModFolderStore: ObservableObject {
         guard let gameFolderID else { return }
         let mods = enabledMods + disabledMods
         let generation = gameFolderGeneration
-        updatesTask?.cancel()
+        let previousTask = updatesTask
         updatesTask = Task { [weak self] in
-            guard let self else { return }
+            previousTask?.cancel()
+            await previousTask?.value
+            guard !Task.isCancelled, let self else { return }
             do {
                 let records = try await fileService.updateRecords(for: mods, gameFolderID: gameFolderID)
                 guard !Task.isCancelled, generation == gameFolderGeneration else { return }
@@ -758,7 +789,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func reserveFolderOperation() -> Bool {
-        guard !isFolderOperationBusy else {
+        guard !isFolderOperationBusy, folderTransitionTask == nil else {
             showError(InstallerAvailability.busy.message)
             return false
         }
@@ -946,24 +977,25 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func stopAccessingCurrentFolder() {
+    private func stopAccessingCurrentFolder() async {
         gameFolderGeneration += 1
-        refreshTask?.cancel()
-        scanTask?.cancel()
-        recoveryTask?.cancel()
-        updatesTask?.cancel()
+        let tasks = [refreshTask, scanTask, recoveryTask, updatesTask].compactMap { $0 }
+        tasks.forEach { $0.cancel() }
         refreshTask = nil
         scanTask = nil
         recoveryTask = nil
         updatesTask = nil
         if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
         modsFolderPresenter = nil
-        activeGameFolderURL?.stopAccessingSecurityScopedResource()
-        activeGameFolderURL = nil
         gameFolderURL = nil
         enabledMods = []
         disabledMods = []
         installedFolderNames = []
+        for task in tasks {
+            await task.value
+        }
+        activeGameFolderURL?.stopAccessingSecurityScopedResource()
+        activeGameFolderURL = nil
     }
 
     private func showError(_ message: String) {

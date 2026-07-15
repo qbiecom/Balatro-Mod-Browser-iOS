@@ -27,7 +27,8 @@ actor ModFileService {
     func scan(modsFolderURL: URL, gameFolderID: String) throws -> ScanResult {
         try Task.checkCancellation()
         do {
-            guard try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+            let values = try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
                 throw ModFileServiceError.folderAccess(modsFolderURL)
             }
         } catch let error as ModFileServiceError {
@@ -39,14 +40,17 @@ actor ModFileService {
         do {
             entries = try fileManager.contentsOfDirectory(
                 at: modsFolderURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles]
             )
         } catch {
             throw ModFileServiceError.folderAccess(modsFolderURL)
         }
         let mods = entries
-        .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        .filter {
+            guard let values = try? $0.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return false }
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }
         .filter { $0.lastPathComponent.caseInsensitiveCompare("lovely") != .orderedSame }
         .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         .map { InstalledMod(id: $0, name: $0.lastPathComponent) }
@@ -65,14 +69,19 @@ actor ModFileService {
         )
     }
 
-    func setEnabled(_ enabled: Bool, modURL: URL) throws {
+    func setEnabled(_ enabled: Bool, modURL: URL, modsFolderURL: URL, gameFolderID: String) throws {
         try Task.checkCancellation()
-        let ignoreURL = modURL.appendingPathComponent(".lovelyignore")
+        let modsFolderIdentity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID)
+        let validatedModURL = try validatedImmediateModChild(modURL, in: modsFolderURL)
+        let ignoreURL = validatedModURL.appendingPathComponent(".lovelyignore")
         let previousMarker = fileManager.fileExists(atPath: ignoreURL.path)
             ? try Data(contentsOf: ignoreURL)
             : nil
 
         do {
+            try Task.checkCancellation()
+            try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+            _ = try validatedImmediateModChild(validatedModURL, in: modsFolderURL)
             if enabled {
                 if previousMarker != nil { try fileManager.removeItem(at: ignoreURL) }
             } else {
@@ -131,18 +140,19 @@ actor ModFileService {
             transaction.phase = .moved
             try deletionRecoveryStore.save(transaction)
             try Task.checkCancellation()
-            try registry.remove(gameFolderID: gameFolderID, modPath: normalizedPath)
-            transaction.phase = .registryRemoved
+            transaction.phase = .committing
             try deletionRecoveryStore.save(transaction)
+            try registry.remove(gameFolderID: gameFolderID, modPath: normalizedPath)
+            transaction.phase = .committed
+            try deletionRecoveryStore.save(transaction)
+            try Task.checkCancellation()
             try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
             try fileManager.removeItem(at: temporaryURL)
             try deletionRecoveryStore.remove(transaction)
         } catch {
-            if !fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) {
-                try? fileManager.moveItem(at: temporaryURL, to: modURL)
+            if transaction.phase != .committing && transaction.phase != .committed {
+                try? rollbackDeletion(&transaction, modURL: modURL, temporaryURL: temporaryURL)
             }
-            if let record { try? registry.add(record) }
-            if fileManager.fileExists(atPath: modURL.path) { try? deletionRecoveryStore.remove(transaction) }
             throw error
         }
     }
@@ -152,32 +162,30 @@ actor ModFileService {
     }
 
     func recoverInterruptedUpdates(modsFolderURL: URL, gameFolderID: String) {
-        guard let modsFolderIdentity = try? verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID) else { return }
+        guard !Task.isCancelled,
+              let modsFolderIdentity = try? verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID) else { return }
         for transaction in recoveryStore.load() where transaction.gameFolderID == gameFolderID {
             let destinationURL = URL(fileURLWithPath: transaction.destinationPath)
             let backupURL = URL(fileURLWithPath: transaction.backupPath)
             do {
+                try Task.checkCancellation()
                 guard (transaction.modsFolderIdentity.isEmpty || transaction.modsFolderIdentity == modsFolderIdentity),
                       transaction.modsFolderPath == modsFolderURL.standardizedFileURL.path else { continue }
                 try validateTransactionPaths(destinationURL: destinationURL, backupURL: backupURL, modsFolderURL: modsFolderURL)
                 try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
-                let currentRecord = try registry.record(gameFolderID: gameFolderID, modPath: transaction.replacementRecord.normalizedModPath)
-                let commit = transaction.phase == .registryUpdated || currentRecord == transaction.replacementRecord
-                if commit, fileManager.fileExists(atPath: destinationURL.path) {
+                if transaction.phase.isCommit {
+                    guard fileManager.fileExists(atPath: destinationURL.path) else { continue }
                     try registry.add(transaction.replacementRecord)
+                    try Task.checkCancellation()
                     if fileManager.fileExists(atPath: backupURL.path) { try fileManager.removeItem(at: backupURL) }
                 } else {
-                    if fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
-                        try fileManager.removeItem(at: destinationURL)
-                    }
-                    if !fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
-                        try fileManager.moveItem(at: backupURL, to: destinationURL)
-                    }
-                    guard fileManager.fileExists(atPath: destinationURL.path) else { continue }
-                    try registry.add(transaction.originalRecord)
+                    var pending = transaction
+                    try rollbackUpdate(&pending, destinationURL: destinationURL)
+                    continue
                 }
                 try recoveryStore.remove(transaction)
-            } catch { continue }
+            } catch is CancellationError { return }
+            catch { continue }
         }
         recoverInterruptedDeletions(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, modsFolderIdentity: modsFolderIdentity)
     }
@@ -187,6 +195,7 @@ actor ModFileService {
         let paths = Set(recoveryStore.load().filter { $0.gameFolderID == gameFolderID }.map(\.modsFolderPath))
             .union(deletionRecoveryStore.load().filter { $0.gameFolderID == gameFolderID }.map(\.modsFolderPath))
         for path in paths {
+            guard !Task.isCancelled else { return }
             recoverInterruptedUpdates(modsFolderURL: URL(fileURLWithPath: path, isDirectory: true), gameFolderID: gameFolderID)
         }
     }
@@ -257,20 +266,27 @@ actor ModFileService {
                 transaction = pending
             }
         } catch {
-            rollback(destinationURL: destinationURL, transaction: transaction)
+            if var pending = transaction { try? rollbackUpdate(&pending, destinationURL: destinationURL) }
             throw error
         }
         let record = InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: destinationURL.standardizedFileURL.path.lowercased(), dependencies: dependencies, currentVersion: mod.version, orphaned: false, catalogID: mod.id)
         do {
             try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+            if var pending = transaction {
+                pending.phase = .committing
+                try recoveryStore.save(pending)
+                transaction = pending
+            }
             try registry.add(record)
             if var pending = transaction {
-                pending.phase = .registryUpdated
+                pending.phase = .committed
                 try recoveryStore.save(pending)
                 transaction = pending
             }
         } catch {
-            rollback(destinationURL: destinationURL, transaction: transaction)
+            if var pending = transaction, !pending.phase.isCommit {
+                try? rollbackUpdate(&pending, destinationURL: destinationURL)
+            }
             throw error
         }
         if let transaction {
@@ -380,23 +396,81 @@ actor ModFileService {
             let modURL = URL(fileURLWithPath: transaction.modPath)
             let temporaryURL = URL(fileURLWithPath: transaction.temporaryPath)
             do {
-                guard transaction.modsFolderPath == modsFolderURL.standardizedFileURL.path, transaction.modsFolderIdentity == modsFolderIdentity,
+                try Task.checkCancellation()
+                guard transaction.modsFolderPath == modsFolderURL.standardizedFileURL.path,
+                      (transaction.modsFolderIdentity.isEmpty || transaction.modsFolderIdentity == modsFolderIdentity),
                       modURL.standardizedFileURL.deletingLastPathComponent() == modsFolderURL.standardizedFileURL,
                       temporaryURL.standardizedFileURL.deletingLastPathComponent() == modsFolderURL.standardizedFileURL,
                       modURL.resolvingSymlinksInPath().deletingLastPathComponent() == modsFolderURL.resolvingSymlinksInPath(),
                       temporaryURL.resolvingSymlinksInPath().deletingLastPathComponent() == modsFolderURL.resolvingSymlinksInPath() else { continue }
                 try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
-                if transaction.phase == .registryRemoved {
+                if transaction.phase.isCommit {
+                    try registry.remove(gameFolderID: gameFolderID, modPath: modURL.standardizedFileURL.path.lowercased())
+                    try Task.checkCancellation()
+                    if fileManager.fileExists(atPath: modURL.path) { try fileManager.removeItem(at: modURL) }
+                    try Task.checkCancellation()
                     if fileManager.fileExists(atPath: temporaryURL.path) { try fileManager.removeItem(at: temporaryURL) }
+                    try deletionRecoveryStore.remove(transaction)
                 } else {
-                    if !fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) { try fileManager.moveItem(at: temporaryURL, to: modURL) }
-                    if let record = transaction.record { try registry.add(record) }
+                    var pending = transaction
+                    try rollbackDeletion(&pending, modURL: modURL, temporaryURL: temporaryURL)
                 }
-                try deletionRecoveryStore.remove(transaction)
-            } catch { continue }
+            } catch is CancellationError { return }
+            catch { continue }
         }
     }
-    private func rollback(destinationURL: URL, transaction: UpdateTransaction?) { if fileManager.fileExists(atPath: destinationURL.path) { try? fileManager.removeItem(at: destinationURL) }; if let transaction { try? fileManager.moveItem(at: URL(fileURLWithPath: transaction.backupPath), to: destinationURL); if fileManager.fileExists(atPath: destinationURL.path) { try? registry.add(transaction.originalRecord); try? recoveryStore.remove(transaction) } } }
+    private func rollbackUpdate(_ transaction: inout UpdateTransaction, destinationURL: URL) throws {
+        let backupURL = URL(fileURLWithPath: transaction.backupPath)
+        if !transaction.phase.isRollback {
+            transaction.phase = .rollingBack
+            try recoveryStore.save(transaction)
+        }
+        try Task.checkCancellation()
+        if fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        transaction.phase = .rollbackDestinationRemoved
+        try recoveryStore.save(transaction)
+        try Task.checkCancellation()
+        if !fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
+            try fileManager.moveItem(at: backupURL, to: destinationURL)
+        }
+        transaction.phase = .rollbackOriginalRestored
+        try recoveryStore.save(transaction)
+        try Task.checkCancellation()
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try registry.add(transaction.originalRecord)
+        } else {
+            try registry.remove(gameFolderID: transaction.gameFolderID, modPath: transaction.originalRecord.normalizedModPath)
+        }
+        transaction.phase = .rollbackRegistryRestored
+        try recoveryStore.save(transaction)
+        try recoveryStore.remove(transaction)
+    }
+
+    private func rollbackDeletion(_ transaction: inout DeletionTransaction, modURL: URL, temporaryURL: URL) throws {
+        if !transaction.phase.isRollback {
+            transaction.phase = .rollingBack
+            try deletionRecoveryStore.save(transaction)
+        }
+        try Task.checkCancellation()
+        if fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) {
+            try fileManager.removeItem(at: temporaryURL)
+        } else if !fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) {
+            try fileManager.moveItem(at: temporaryURL, to: modURL)
+        }
+        transaction.phase = .rollbackFileRestored
+        try deletionRecoveryStore.save(transaction)
+        try Task.checkCancellation()
+        if fileManager.fileExists(atPath: modURL.path), let record = transaction.record {
+            try registry.add(record)
+        } else {
+            try registry.remove(gameFolderID: transaction.gameFolderID, modPath: modURL.standardizedFileURL.path.lowercased())
+        }
+        transaction.phase = .rollbackRegistryRestored
+        try deletionRecoveryStore.save(transaction)
+        try deletionRecoveryStore.remove(transaction)
+    }
 }
 
 enum ModFileServiceError: LocalizedError {
@@ -413,7 +487,14 @@ enum ModFileServiceError: LocalizedError {
     }
 }
 
-nonisolated private enum UpdateTransactionPhase: String, Codable { case prepared, originalMoved, replacementMoved, registryUpdated }
+nonisolated private enum UpdateTransactionPhase: String, Codable {
+    case prepared, originalMoved, replacementMoved, registryUpdated
+    case committing, committed
+    case rollingBack, rollbackDestinationRemoved, rollbackOriginalRestored, rollbackRegistryRestored
+
+    var isCommit: Bool { self == .registryUpdated || self == .committing || self == .committed }
+    var isRollback: Bool { self == .rollingBack || self == .rollbackDestinationRemoved || self == .rollbackOriginalRestored || self == .rollbackRegistryRestored }
+}
 
 nonisolated private struct UpdateTransaction: Codable, Identifiable {
     let id: UUID
@@ -492,7 +573,14 @@ nonisolated private final class UpdateRecoveryStore {
     private func fileURL(for transaction: UpdateTransaction) -> URL { directoryURL.appendingPathComponent("\(transaction.id.uuidString).json") }
 }
 
-nonisolated private enum DeletionTransactionPhase: String, Codable { case prepared, moved, registryRemoved }
+nonisolated private enum DeletionTransactionPhase: String, Codable {
+    case prepared, moved, registryRemoved
+    case committing, committed
+    case rollingBack, rollbackFileRestored, rollbackRegistryRestored
+
+    var isCommit: Bool { self == .registryRemoved || self == .committing || self == .committed }
+    var isRollback: Bool { self == .rollingBack || self == .rollbackFileRestored || self == .rollbackRegistryRestored }
+}
 
 nonisolated private struct DeletionTransaction: Codable, Identifiable {
     let id: UUID
@@ -504,6 +592,10 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
     let record: InstalledModRecord?
     var phase: DeletionTransactionPhase
 
+    private enum CodingKeys: String, CodingKey {
+        case id, gameFolderID, modsFolderPath, modsFolderIdentity, modPath, temporaryPath, record, phase
+    }
+
     init(gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, modPath: String, temporaryPath: String, record: InstalledModRecord?, phase: DeletionTransactionPhase) {
         id = UUID()
         self.gameFolderID = gameFolderID
@@ -513,6 +605,21 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
         self.temporaryPath = temporaryPath
         self.record = record
         self.phase = phase
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        modPath = try values.decode(String.self, forKey: .modPath)
+        temporaryPath = try values.decode(String.self, forKey: .temporaryPath)
+        record = try values.decodeIfPresent(InstalledModRecord.self, forKey: .record)
+        gameFolderID = try values.decodeIfPresent(String.self, forKey: .gameFolderID)
+            ?? record?.gameFolderID
+            ?? ""
+        modsFolderPath = try values.decodeIfPresent(String.self, forKey: .modsFolderPath)
+            ?? URL(fileURLWithPath: modPath).deletingLastPathComponent().standardizedFileURL.path
+        modsFolderIdentity = try values.decodeIfPresent(String.self, forKey: .modsFolderIdentity) ?? ""
+        phase = try values.decodeIfPresent(DeletionTransactionPhase.self, forKey: .phase) ?? .moved
     }
 }
 
