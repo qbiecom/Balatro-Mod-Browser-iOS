@@ -30,6 +30,8 @@ final class ModFolderStore: ObservableObject {
     private let downloadsCacheLifetime: TimeInterval = 60 * 15
     private var activeGameFolderURL: URL?
     private var catalogMods: [String: CatalogMod] = [:]
+    private var catalogNameAliases: [String: String] = [:]
+    private var catalogFolderAliases: [String: String] = [:]
     private var latestCatalogUpdate: FlexibleTimestamp?
     private var catalogRefreshedAt: Date?
     private var detailCache: [String: DetailCacheEntry] = [:]
@@ -136,7 +138,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func presentation(for mod: InstalledMod) -> ModPresentation {
-        let catalogMod = catalogMods[mod.name.lowercased()]
+        let catalogMod = catalogMod(matchingLocalName: mod.name)
         let summary = catalogMod?.cleanedSummary
 
         return ModPresentation(
@@ -172,6 +174,8 @@ final class ModFolderStore: ObservableObject {
             .appendingPathComponent("ModThumbnails", isDirectory: true)
         try? FileManager.default.removeItem(at: thumbnailDirectory)
         catalogMods = [:]
+        catalogNameAliases = [:]
+        catalogFolderAliases = [:]
         catalogItems = []
         latestCatalogUpdate = nil
         catalogRefreshedAt = nil
@@ -181,7 +185,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func loadDetail(for mod: InstalledMod) async {
-        guard let catalogMod = catalogMods[mod.name.lowercased()] else { return }
+        guard let catalogMod = catalogMod(matchingLocalName: mod.name) else { return }
         await loadDetail(for: catalogMod)
     }
 
@@ -363,8 +367,13 @@ final class ModFolderStore: ObservableObject {
     }
 
     func update(_ localMod: InstalledMod) {
-        guard let catalogMod = catalogMods[localMod.name.lowercased()], isUpdateAvailable(for: localMod) else { return }
-        beginInstall(catalogMod, replacing: true, replacementModURL: localMod.id)
+        guard let gameFolderID, isUpdateAvailable(for: localMod) else { return }
+        Task {
+            guard let record = try? await fileService.updateRecords(for: [localMod], gameFolderID: gameFolderID).first,
+                  let catalogID = record.catalogID,
+                  let catalogMod = catalogMods[catalogID.lowercased()] else { return }
+            beginInstall(catalogMod, replacing: true, replacementModURL: localMod.id)
+        }
     }
 
     private func refreshAvailableUpdates() {
@@ -402,7 +411,8 @@ final class ModFolderStore: ObservableObject {
               let cached = try? JSONDecoder().decode(CatalogCache.self, from: data) else {
             return
         }
-        catalogMods = cached.items
+        catalogMods = indexed(Array(cached.items.values))
+        rebuildCatalogAliases()
         latestCatalogUpdate = cached.lastUpdatedAt
         catalogRefreshedAt = cached.refreshedAt
         catalogItems = uniqueCatalogItems(from: cached.items)
@@ -435,6 +445,7 @@ final class ModFolderStore: ObservableObject {
             if catalogMods.isEmpty || latestCatalogUpdate == nil {
                 let fetched = try await fetchCatalogPages(path: "mods", query: [])
                 catalogMods = indexed(fetched)
+                rebuildCatalogAliases()
                 latestCatalogUpdate = fetched.compactMap(\.updatedAt).max { $0.value < $1.value }
             } else if let latestCatalogUpdate {
                 let changed = try await fetchCatalogPages(
@@ -448,6 +459,7 @@ final class ModFolderStore: ObservableObject {
                         apply(mod)
                     }
                 }
+                rebuildCatalogAliases()
                 if let newest = changed.compactMap(\.updatedAt).max(by: { $0.value < $1.value }) {
                     self.latestCatalogUpdate = newest
                 }
@@ -520,36 +532,58 @@ final class ModFolderStore: ObservableObject {
 
     private func indexed(_ mods: [CatalogMod]) -> [String: CatalogMod] {
         var indexed: [String: CatalogMod] = [:]
-        for mod in mods { index(mod, into: &indexed) }
+        for mod in mods {
+            let key = mod.id.lowercased()
+            indexed[key] = indexed[key].map { $0.merged(with: mod) } ?? mod
+        }
         return indexed
     }
 
     private func apply(_ mod: CatalogMod) {
         let current = catalogMods[mod.id.lowercased()]
-        index(current?.merged(with: mod) ?? mod, into: &catalogMods)
-    }
-
-    private func index(_ mod: CatalogMod, into dictionary: inout [String: CatalogMod]) {
-        dictionary[mod.id.lowercased()] = mod
-        if let name = mod.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            dictionary[name.lowercased()] = mod
-        }
-        if let folderName = mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty {
-            dictionary[folderName.lowercased()] = mod
-        }
+        catalogMods[mod.id.lowercased()] = current?.merged(with: mod) ?? mod
+        rebuildCatalogAliases()
     }
 
     private func applyCachedDetailsToCatalog() {
         let now = Date()
         for entry in detailCache.values where now.timeIntervalSince(entry.refreshedAt) < detailCacheLifetime {
             guard let current = catalogMods[entry.mod.id.lowercased()] else { continue }
-            index(current.merged(with: entry.mod), into: &catalogMods)
+            catalogMods[entry.mod.id.lowercased()] = current.merged(with: entry.mod)
         }
+        rebuildCatalogAliases()
         catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
     private func remove(_ mod: CatalogMod) {
-        catalogMods = catalogMods.filter { $0.value.id.caseInsensitiveCompare(mod.id) != .orderedSame }
+        catalogMods.removeValue(forKey: mod.id.lowercased())
+        rebuildCatalogAliases()
+    }
+
+    private func rebuildCatalogAliases() {
+        catalogNameAliases = aliasIndex { $0.name }
+        catalogFolderAliases = aliasIndex { $0.folderName }
+    }
+
+    private func aliasIndex(_ value: (CatalogMod) -> String?) -> [String: String] {
+        var resolved: [String: String] = [:]
+        var ambiguous = Set<String>()
+        for mod in catalogMods.values.sorted(by: { $0.id.localizedStandardCompare($1.id) == .orderedAscending }) {
+            guard let alias = value(mod)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !alias.isEmpty else { continue }
+            if let existing = resolved[alias], existing != mod.id.lowercased() {
+                resolved.removeValue(forKey: alias)
+                ambiguous.insert(alias)
+            } else if !ambiguous.contains(alias) {
+                resolved[alias] = mod.id.lowercased()
+            }
+        }
+        return resolved
+    }
+
+    private func catalogMod(matchingLocalName name: String) -> CatalogMod? {
+        let key = name.lowercased()
+        let canonicalID = catalogNameAliases[key] ?? catalogFolderAliases[key]
+        return canonicalID.flatMap { catalogMods[$0] }
     }
 
     private func persistCatalog() {
