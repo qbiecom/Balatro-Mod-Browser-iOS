@@ -23,7 +23,8 @@ final class ModFolderStore: ObservableObject {
     private let catalogCacheKey = "bmiCatalogCacheV2"
     private let detailCacheKey = "bmiDetailCacheV1"
     private let downloadsCacheKey = "bmiDownloadsCacheV1"
-    private let fileService = ModFileService()
+    private let downloadSession = TrustedDownloadSession()
+    private lazy var fileService = ModFileService(downloadSession: downloadSession)
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
     private let downloadsCacheLifetime: TimeInterval = 60 * 15
@@ -496,7 +497,7 @@ final class ModFolderStore: ObservableObject {
             if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
             components?.queryItems = items
             guard let url = components?.url else { throw URLError(.badURL) }
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await downloadSession.session.data(from: url)
             guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
                 throw URLError(.badServerResponse)
             }
@@ -510,7 +511,7 @@ final class ModFolderStore: ObservableObject {
     private func fetchModDetail(id: String) async throws -> CatalogMod {
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
         guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else { throw URLError(.badURL) }
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await downloadSession.session.data(from: url)
         guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
             throw URLError(.badServerResponse)
         }
@@ -693,7 +694,7 @@ final class ModFolderStore: ObservableObject {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await downloadSession.session.data(for: request)
         guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
             throw ModInstallError.downloadFailed
         }
@@ -719,7 +720,7 @@ final class ModFolderStore: ObservableObject {
             guard let detailURL = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else {
                 throw ModInstallError.downloadFailed
             }
-            let (detailData, detailResponse) = try await URLSession.shared.data(from: detailURL)
+            let (detailData, detailResponse) = try await downloadSession.session.data(from: detailURL)
             guard let detailResponse = detailResponse as? HTTPURLResponse, 200..<300 ~= detailResponse.statusCode else {
                 throw ModInstallError.downloadFailed
             }

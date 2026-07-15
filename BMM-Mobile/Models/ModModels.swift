@@ -298,6 +298,7 @@ enum ModInstallError: LocalizedError {
     case archiveTooLarge
     case tooManyArchiveFiles
     case insufficientStorage
+    case untrustedDownloadURL
 
     var errorDescription: String? {
         switch self {
@@ -310,6 +311,7 @@ enum ModInstallError: LocalizedError {
         case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
         case .tooManyArchiveFiles: "This archive contains more than 5,000 files."
         case .insufficientStorage: "There is not enough free storage to safely extract this archive."
+        case .untrustedDownloadURL: "The download URL or redirect was not from an approved HTTPS host."
         }
     }
 }

@@ -9,8 +9,13 @@ actor ModFileService {
     private static let maximumArchiveEntrySize: UInt64 = 128 * 1024 * 1024
     private static let maximumArchivePathDepth = 32
     private let fileManager = FileManager.default
+    private let downloadSession: TrustedDownloadSession
     private let registry = InstalledModRegistry()
     private let recoveryStore = UpdateRecoveryStore()
+
+    init(downloadSession: TrustedDownloadSession = TrustedDownloadSession()) {
+        self.downloadSession = downloadSession
+    }
 
     struct ScanResult {
         let enabled: [InstalledMod]
@@ -170,7 +175,8 @@ actor ModFileService {
     }
 
     private func downloadArchive(from url: URL) async throws -> URL {
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        guard TrustedDownloadSession.isTrusted(url) else { throw ModInstallError.untrustedDownloadURL }
+        let (bytes, response) = try await downloadSession.session.bytes(from: url)
         guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else { throw ModInstallError.downloadFailed }
         if let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init), length > Self.maximumArchiveCompressedSize {
             throw ModInstallError.archiveTooLarge
