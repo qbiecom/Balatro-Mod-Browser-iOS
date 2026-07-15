@@ -204,7 +204,7 @@ struct DetailCacheEntry: Codable {
     let refreshedAt: Date
 }
 
-nonisolated struct InstalledModRecord: Codable, Identifiable {
+nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
     let gameFolderID: String
     let name: String
     let path: String

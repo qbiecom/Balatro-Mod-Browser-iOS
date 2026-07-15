@@ -30,7 +30,8 @@ nonisolated final class InstalledModRegistry {
     }
 
     func reconcile(gameFolderID: String, existingPaths: Set<String>) throws {
-        try save((try load()).map { record in
+        let records = try load()
+        let reconciled = records.map { record in
             InstalledModRecord(
                 gameFolderID: record.gameFolderID,
                 name: record.name,
@@ -41,7 +42,8 @@ nonisolated final class InstalledModRegistry {
                 orphaned: record.gameFolderID == gameFolderID && !existingPaths.contains(record.normalizedModPath),
                 catalogID: record.catalogID
             )
-        })
+        }
+        if reconciled != records { try save(reconciled) }
     }
 
     func record(gameFolderID: String, modPath: String) throws -> InstalledModRecord? {

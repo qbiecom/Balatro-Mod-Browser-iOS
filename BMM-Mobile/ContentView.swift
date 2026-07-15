@@ -99,6 +99,7 @@ struct TileLayout {
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var folderStore = ModFolderStore()
     @AppStorage("cardDensity") private var cardDensityRaw = CardDensity.comfortable.rawValue
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
@@ -261,6 +262,9 @@ struct ContentView: View {
         }
         .preferredColorScheme(appTheme.colorScheme)
         .font(.balatroChrome(16))
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            folderStore.applicationLifecycleDidChange(isActive: phase == .active)
+        }
     }
 
     private var dependencyInstallMessage: String {

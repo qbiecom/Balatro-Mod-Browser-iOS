@@ -49,7 +49,9 @@ final class ModFolderStore: ObservableObject {
     private var catalogRefreshedAt: Date?
     private var detailCache: [String: DetailCacheEntry] = [:]
     private var downloadsRefreshedAt: Date?
-    private var reindexTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var modsFolderPresenter: ModsFolderPresenter?
+    private var isApplicationActive = true
     private var installTask: Task<Void, Never>?
 
     private var modsFolderURL: URL? {
@@ -78,11 +80,11 @@ final class ModFolderStore: ObservableObject {
         loadCachedDetails()
         loadCachedDownloads()
         restoreFolderAccess()
-        startBackgroundReindex()
     }
 
     deinit {
-        reindexTask?.cancel()
+        refreshTask?.cancel()
+        if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
     }
 
     func handleFolderSelection(_ result: Result<[URL], Error>) {
@@ -322,6 +324,7 @@ final class ModFolderStore: ObservableObject {
 
             activeGameFolderURL = url
             gameFolderURL = url
+            observeModsFolder()
             recoverInterruptedUpdates()
             refreshMods()
             refreshCatalogIfNeeded()
@@ -343,6 +346,7 @@ final class ModFolderStore: ObservableObject {
         UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
         activeGameFolderURL = url
         gameFolderURL = url
+        observeModsFolder()
         recoverInterruptedUpdates()
         refreshMods()
         refreshCatalogIfNeeded()
@@ -368,7 +372,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func refreshMods() {
-        guard let modsFolderURL, let gameFolderID else { return }
+        guard isApplicationActive, let modsFolderURL, let gameFolderID else { return }
         Task {
             do {
                 let result = try await fileService.scan(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
@@ -384,6 +388,30 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    func applicationLifecycleDidChange(isActive: Bool) {
+        isApplicationActive = isActive
+        if isActive { requestModsRefresh() }
+    }
+
+    private func requestModsRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            self?.refreshMods()
+        }
+    }
+
+    private func observeModsFolder() {
+        guard let modsFolderURL else { return }
+        if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
+        let presenter = ModsFolderPresenter(url: modsFolderURL) { [weak self] in
+            self?.requestModsRefresh()
+        }
+        modsFolderPresenter = presenter
+        NSFileCoordinator.addFilePresenter(presenter)
+    }
+
     /// Completes an update after a restart, or restores the original if its replacement never arrived.
     private func recoverInterruptedUpdates() {
         guard let gameFolderID else { return }
@@ -393,15 +421,6 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func startBackgroundReindex() {
-        reindexTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled else { return }
-                self?.refreshMods()
-            }
-        }
-    }
 
     func isUpdateAvailable(for mod: InstalledMod) -> Bool {
         updateAvailableNames.contains(mod.name.lowercased())
