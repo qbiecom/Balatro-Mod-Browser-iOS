@@ -11,7 +11,7 @@ final class ThumbnailLoader: ObservableObject {
     private static let cacheLifetime: TimeInterval = 60 * 60 * 24 * 7
     private static let maximumTransferBytes = 8 * 1024 * 1024
     private static let acceptedMIMETypes: Set<String> = ["image/jpeg", "image/png", "image/webp", "image/gif"]
-    private static let memoryCache: NSCache<NSString, UIImage> = {
+    fileprivate static let memoryCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 160
         cache.totalCostLimit = 48 * 1024 * 1024
@@ -22,7 +22,10 @@ final class ThumbnailLoader: ObservableObject {
     private let session = TrustedDownloadSession()
     private var loadTask: Task<UIImage?, Never>?
 
-    init(url: URL?) { self.url = url }
+    init(url: URL?) {
+        self.url = url
+        ThumbnailCache.shared.register(self)
+    }
     deinit { loadTask?.cancel() }
 
     func replace(url: URL?) {
@@ -58,6 +61,13 @@ final class ThumbnailLoader: ObservableObject {
         loadTask = nil
         isLoading = false
     }
+
+    func invalidateCache() {
+        cancel()
+        image = nil
+    }
+
+    static func clearMemoryCache() { memoryCache.removeAllObjects() }
 
     func retry(displaySize: CGSize) async {
         cancel()

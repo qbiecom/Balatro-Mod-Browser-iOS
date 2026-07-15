@@ -194,9 +194,7 @@ final class ModFolderStore: ObservableObject {
 
     func clearCatalogCache() {
         Task { try? await catalogFileCache.remove() }
-        let thumbnailDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ModThumbnails", isDirectory: true)
-        try? FileManager.default.removeItem(at: thumbnailDirectory)
+        ThumbnailCache.shared.invalidateAll()
         catalogMods = [:]
         catalogNameAliases = [:]
         catalogFolderAliases = [:]
