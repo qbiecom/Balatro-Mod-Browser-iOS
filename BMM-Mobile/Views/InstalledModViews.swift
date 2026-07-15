@@ -369,7 +369,7 @@ struct ModThumbnail: View {
                     ProgressView()
                 } else if url != nil {
                     Button {
-                        Task { await loader.retry() }
+                        Task { await loader.retry(displaySize: proxy.size) }
                     } label: {
                         placeholder
                     }
@@ -379,8 +379,9 @@ struct ModThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .task(id: proxy.size) { await loader.load(displaySize: proxy.size) }
         }
-        .task { await loader.load() }
+        .onDisappear { loader.cancel() }
     }
 
     private var placeholder: some View {
