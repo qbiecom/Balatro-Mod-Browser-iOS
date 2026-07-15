@@ -321,14 +321,7 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if folderStore.gameFolderURL == nil {
-                    ContentUnavailableView(
-                        "Game Folder Not Connected",
-                        systemImage: "folder.badge.questionmark",
-                        description: Text("Choose the game folder from your Lovely Mobile Maker app.")
-                    )
-                    Button("Choose Game Folder") { isShowingFolderPicker = true }
-                        .disabled(folderStore.isFolderOperationBusy)
-                        .buttonStyle(.borderedProminent)
+                    firstRunFolderPicker
                 } else {
                     if folderStore.isLoadingCatalog {
                         HStack(spacing: 8) {
@@ -344,6 +337,48 @@ struct ContentView: View {
             }
             .padding()
         }
+    }
+
+    private var firstRunFolderPicker: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(.blue)
+
+            VStack(spacing: 10) {
+                Text("Connect Your Game Folder")
+                    .font(.balatroChrome(28))
+
+                Text("BMM Mobile needs access to the Lovely Mobile Maker game folder before it can manage mods.")
+                    .font(.balatroChrome(16))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Select the folder named game", systemImage: "checkmark.circle.fill")
+                Label("It must contain the config and Mods folders", systemImage: "checkmark.circle.fill")
+                Label("Do not select Mods on its own", systemImage: "xmark.circle.fill")
+            }
+            .font(.balatroChrome(15))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: 370, alignment: .leading)
+
+            Button {
+                isShowingFolderPicker = true
+            } label: {
+                Label("Choose Game Folder", systemImage: "folder")
+                    .font(.balatroChrome(18))
+                    .frame(minWidth: 210)
+            }
+            .disabled(folderStore.isFolderOperationBusy)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity, minHeight: 470)
+        .padding(32)
+        .multilineTextAlignment(.center)
     }
 
     @ViewBuilder
