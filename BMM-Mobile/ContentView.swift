@@ -172,7 +172,7 @@ struct ContentView: View {
                             } label: {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .disabled(folderStore.isLoadingCatalog)
+                            .disabled(folderStore.isLoadingCatalog || folderStore.isFolderOperationBusy)
                             .accessibilityLabel("Refresh mod details")
                         }
                     }
@@ -321,6 +321,7 @@ struct ContentView: View {
                         description: Text("Choose the game folder from your Lovely Mobile Maker app.")
                     )
                     Button("Choose Game Folder") { isShowingFolderPicker = true }
+                        .disabled(folderStore.isFolderOperationBusy)
                         .buttonStyle(.borderedProminent)
                 } else {
                     if folderStore.isLoadingCatalog {

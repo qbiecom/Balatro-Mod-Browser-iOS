@@ -115,6 +115,7 @@ actor ModFileService {
             folderName = try validatedInstallFolderName(for: mod)
             destinationURL = try containedChildURL(named: folderName, in: modsFolderURL)
         }
+        try verifyGameFolderIdentity(modsFolderURL: modsFolderURL, expectedID: gameFolderID)
         guard try isZIPArchive(at: archiveURL) else { throw ModInstallError.unsupportedArchive }
 
         let stagingURL = modsFolderURL.appendingPathComponent(".staging_\(UUID().uuidString)", isDirectory: true)
@@ -130,6 +131,7 @@ actor ModFileService {
         let wasDisabled = replacementModURL != nil && fileManager.fileExists(atPath: destinationURL.appendingPathComponent(".lovelyignore").path)
         var transaction: UpdateTransaction?
         if fileManager.fileExists(atPath: destinationURL.path) {
+            try verifyGameFolderIdentity(modsFolderURL: modsFolderURL, expectedID: gameFolderID)
             guard replacementModURL != nil else { throw ModInstallError.alreadyInstalled }
             let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
             try fileManager.createDirectory(at: backupsURL, withIntermediateDirectories: true)
@@ -144,6 +146,7 @@ actor ModFileService {
         }
         do {
             try Task.checkCancellation()
+            try verifyGameFolderIdentity(modsFolderURL: modsFolderURL, expectedID: gameFolderID)
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
             if wasDisabled { try Data().write(to: destinationURL.appendingPathComponent(".lovelyignore"), options: .atomic) }
         } catch {
@@ -152,6 +155,7 @@ actor ModFileService {
         }
         let record = InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: destinationURL.standardizedFileURL.path.lowercased(), dependencies: dependencies, currentVersion: mod.version, orphaned: false, catalogID: mod.id)
         do {
+            try verifyGameFolderIdentity(modsFolderURL: modsFolderURL, expectedID: gameFolderID)
             try registry.add(record)
         } catch {
             rollback(destinationURL: destinationURL, transaction: transaction)
@@ -169,6 +173,13 @@ actor ModFileService {
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String { let name = (mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? mod.folderName! : mod.id).trimmingCharacters(in: .whitespacesAndNewlines); let reserved: Set<String> = [".", "..", "mods", "disabled mods", ".bmm backups", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]; let device = name.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""; guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"), name.rangeOfCharacter(from: .controlCharacters) == nil, !reserved.contains(name.lowercased()), !reserved.contains(device) else { throw ModInstallError.unsafeFolderName }; return name }
     private func containedChildURL(named name: String, in rootURL: URL) throws -> URL { let root = rootURL.standardizedFileURL; let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL; guard child.deletingLastPathComponent().path == root.path else { throw ModInstallError.unsafeFolderName }; return child }
     private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL { let destination = url.standardizedFileURL; guard destination.deletingLastPathComponent() == modsFolderURL.standardizedFileURL, (try? destination.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw ModInstallError.invalidUpdateTarget }; return destination }
+    private func verifyGameFolderIdentity(modsFolderURL: URL, expectedID: String) throws {
+        let gameFolderURL = modsFolderURL.deletingLastPathComponent()
+        let identifier = (try? gameFolderURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier)
+            .map { String(describing: $0) }
+            ?? gameFolderURL.standardizedFileURL.path.lowercased()
+        guard identifier == expectedID else { throw ModInstallError.invalidUpdateTarget }
+    }
     private func rollback(destinationURL: URL, transaction: UpdateTransaction?) { if fileManager.fileExists(atPath: destinationURL.path) { try? fileManager.removeItem(at: destinationURL) }; if let transaction { try? fileManager.moveItem(at: URL(fileURLWithPath: transaction.backupPath), to: destinationURL); if fileManager.fileExists(atPath: destinationURL.path) { try? recoveryStore.remove(transaction) } } }
 }
 

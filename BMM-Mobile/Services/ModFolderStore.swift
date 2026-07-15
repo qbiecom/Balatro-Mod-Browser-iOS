@@ -13,6 +13,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var catalogErrorMessage: String?
     @Published private(set) var installingModIDs: Set<String> = []
     @Published private(set) var installingModName: String?
+    @Published private(set) var isFolderOperationBusy = false
     @Published var dependencyInstallRequest: DependencyInstallRequest?
     @Published var pendingGameFolderSelection: GameFolderSelection?
     @Published var isShowingError = false
@@ -33,6 +34,7 @@ final class ModFolderStore: ObservableObject {
     private var detailCache: [String: DetailCacheEntry] = [:]
     private var downloadsRefreshedAt: Date?
     private var reindexTask: Task<Void, Never>?
+    private var installTask: Task<Void, Never>?
 
     private var modsFolderURL: URL? {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
@@ -62,6 +64,10 @@ final class ModFolderStore: ObservableObject {
     }
 
     func handleFolderSelection(_ result: Result<[URL], Error>) {
+        guard !isFolderOperationBusy else {
+            showError("Wait for the current install or update to finish before changing the game folder.")
+            return
+        }
         guard case .success(let urls) = result, let url = urls.first else { return }
 
         guard url.startAccessingSecurityScopedResource() else {
@@ -83,6 +89,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func confirmPendingGameFolderSelection() {
+        guard !isFolderOperationBusy else { return }
         guard let selection = pendingGameFolderSelection else { return }
         pendingGameFolderSelection = nil
 
@@ -222,11 +229,11 @@ final class ModFolderStore: ObservableObject {
 
         guard let dependencies = resolvedDependencies(for: request.mod, talismanProvider: talismanProvider) else { return }
 
-        Task {
-            for dependency in dependencies where !isInstalled(dependency) {
-                guard await downloadAndInstall(dependency) else { return }
+        startInstallTask {
+            for dependency in dependencies where !self.isInstalled(dependency) {
+                guard await self.downloadAndInstall(dependency) else { return }
             }
-            _ = await downloadAndInstall(
+            _ = await self.downloadAndInstall(
                 request.mod,
                 replacing: request.replacing,
                 dependencies: dependencies.map(\.installFolderName),
@@ -580,13 +587,23 @@ final class ModFolderStore: ObservableObject {
             return
         }
 
-        Task {
-            _ = await downloadAndInstall(
+        startInstallTask {
+            _ = await self.downloadAndInstall(
                 mod,
                 replacing: replacing,
                 dependencies: dependencies.map(\.installFolderName),
                 replacementModURL: replacementModURL
             )
+        }
+    }
+
+    private func startInstallTask(_ operation: @escaping @MainActor () async -> Void) {
+        guard !isFolderOperationBusy else { return }
+        isFolderOperationBusy = true
+        installTask = Task { [weak self] in
+            await operation()
+            self?.isFolderOperationBusy = false
+            self?.installTask = nil
         }
     }
 
