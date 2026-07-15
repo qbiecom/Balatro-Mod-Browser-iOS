@@ -13,36 +13,46 @@ final class InstalledModRegistry {
 
     func add(_ record: InstalledModRecord) throws {
         var records = load()
-        records.removeAll { $0.name.caseInsensitiveCompare(record.name) == .orderedSame }
+        records.removeAll {
+            $0.gameFolderID == record.gameFolderID
+                && $0.normalizedModPath == record.normalizedModPath
+        }
         records.append(record)
         try save(records)
     }
 
-    func remove(named name: String) {
-        try? save(load().filter { $0.name.caseInsensitiveCompare(name) != .orderedSame })
+    func remove(gameFolderID: String, modPath: String) {
+        try? save(load().filter {
+            $0.gameFolderID != gameFolderID || $0.normalizedModPath != modPath
+        })
     }
 
-    func reconcile(existingNames: Set<String>) {
+    func reconcile(gameFolderID: String, existingPaths: Set<String>) {
         try? save(load().map { record in
             InstalledModRecord(
+                gameFolderID: record.gameFolderID,
                 name: record.name,
                 path: record.path,
+                normalizedModPath: record.normalizedModPath,
                 dependencies: record.dependencies,
                 currentVersion: record.currentVersion,
-                orphaned: !existingNames.contains(record.name.lowercased()),
+                orphaned: record.gameFolderID == gameFolderID && !existingPaths.contains(record.normalizedModPath),
                 catalogID: record.catalogID
             )
         })
     }
 
-    func record(named name: String) -> InstalledModRecord? {
-        load().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    func record(gameFolderID: String, modPath: String) -> InstalledModRecord? {
+        load().first {
+            $0.gameFolderID == gameFolderID && $0.normalizedModPath == modPath
+        }
     }
 
-    func dependents(of dependency: String) -> [InstalledModRecord] {
+    func dependents(of dependency: String, in gameFolderID: String) -> [InstalledModRecord] {
         let normalizedDependency = dependency.normalizedDependencyName
         return load().filter { record in
-            record.dependencies.contains { $0.normalizedDependencyName == normalizedDependency }
+            record.gameFolderID == gameFolderID
+                && record.dependencies.contains { $0.normalizedDependencyName == normalizedDependency }
         }
     }
 

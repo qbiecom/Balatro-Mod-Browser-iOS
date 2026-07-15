@@ -205,14 +205,52 @@ struct DetailCacheEntry: Codable {
 }
 
 struct InstalledModRecord: Codable, Identifiable {
+    let gameFolderID: String
     let name: String
     let path: String
+    let normalizedModPath: String
     let dependencies: [String]
     let currentVersion: String?
     let orphaned: Bool
     let catalogID: String?
 
-    var id: String { name.lowercased() }
+    var id: String { "\(gameFolderID):\(normalizedModPath)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case gameFolderID, name, path, normalizedModPath, dependencies, currentVersion, orphaned, catalogID
+    }
+
+    init(
+        gameFolderID: String,
+        name: String,
+        path: String,
+        normalizedModPath: String,
+        dependencies: [String],
+        currentVersion: String?,
+        orphaned: Bool,
+        catalogID: String?
+    ) {
+        self.gameFolderID = gameFolderID
+        self.name = name
+        self.path = path
+        self.normalizedModPath = normalizedModPath
+        self.dependencies = dependencies
+        self.currentVersion = currentVersion
+        self.orphaned = orphaned
+        self.catalogID = catalogID
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        name = try values.decode(String.self, forKey: .name)
+        path = try values.decode(String.self, forKey: .path)
+        gameFolderID = try values.decodeIfPresent(String.self, forKey: .gameFolderID) ?? "legacy:\(path.lowercased())"
+        normalizedModPath = try values.decodeIfPresent(String.self, forKey: .normalizedModPath) ?? path.lowercased()
+        dependencies = try values.decode([String].self, forKey: .dependencies)
+        currentVersion = try values.decodeIfPresent(String.self, forKey: .currentVersion)
+        orphaned = try values.decode(Bool.self, forKey: .orphaned)
+        catalogID = try values.decodeIfPresent(String.self, forKey: .catalogID)
+    }
 }
 
 struct DependencyInstallRequest: Identifiable {

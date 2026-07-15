@@ -42,6 +42,18 @@ final class ModFolderStore: ObservableObject {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
     }
 
+    private var gameFolderID: String? {
+        guard let gameFolderURL else { return nil }
+        if let identifier = try? gameFolderURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier {
+            return String(describing: identifier)
+        }
+        return gameFolderURL.standardizedFileURL.path.lowercased()
+    }
+
+    private func normalizedModPath(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+
     var totalModCount: Int { enabledMods.count + disabledMods.count }
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
 
@@ -114,13 +126,15 @@ final class ModFolderStore: ObservableObject {
 
     func delete(_ mod: InstalledMod) {
         do {
-            let dependents = installedModRegistry.dependents(of: mod.name)
+            guard let gameFolderID else { return }
+            let modPath = normalizedModPath(mod.id)
+            let dependents = installedModRegistry.dependents(of: mod.name, in: gameFolderID)
             guard dependents.isEmpty else {
                 showError("\(mod.name) is required by: \(dependents.map(\.name).joined(separator: ", ")). Remove those mods first.")
                 return
             }
             try FileManager.default.removeItem(at: mod.id)
-            installedModRegistry.remove(named: mod.name)
+            installedModRegistry.remove(gameFolderID: gameFolderID, modPath: modPath)
             refreshMods()
         } catch {
             showError(error.localizedDescription)
@@ -318,12 +332,18 @@ final class ModFolderStore: ObservableObject {
         enabledMods = allMods.filter { !isIgnored($0) }
         disabledMods = allMods.filter(isIgnored)
         installedFolderNames = Set((enabledMods + disabledMods).map { $0.name.lowercased() })
-        installedModRegistry.reconcile(existingNames: installedFolderNames)
+        guard let gameFolderID else { return }
+        installedModRegistry.reconcile(
+            gameFolderID: gameFolderID,
+            existingPaths: Set(allMods.map { normalizedModPath($0.id) })
+        )
     }
 
     /// Completes an update after a restart, or restores the original if its replacement never arrived.
     private func recoverInterruptedUpdates() {
+        guard let gameFolderID else { return }
         for transaction in updateRecoveryStore.load() {
+            guard transaction.replacementRecord.gameFolderID == gameFolderID else { continue }
             let destinationURL = URL(fileURLWithPath: transaction.destinationPath)
             let backupURL = URL(fileURLWithPath: transaction.backupPath)
 
@@ -371,7 +391,11 @@ final class ModFolderStore: ObservableObject {
 
     private func refreshAvailableUpdates() {
         updateAvailableNames = Set((enabledMods + disabledMods).compactMap { localMod in
-            guard let record = installedModRegistry.record(named: localMod.name),
+            guard let gameFolderID,
+                  let record = installedModRegistry.record(
+                    gameFolderID: gameFolderID,
+                    modPath: normalizedModPath(localMod.id)
+                  ),
                   let catalogID = record.catalogID,
                   let catalogMod = catalogMods[catalogID.lowercased()],
                   let current = record.currentVersion,
@@ -647,7 +671,7 @@ final class ModFolderStore: ObservableObject {
         replacing: Bool = false,
         dependencies: [String] = []
     ) async -> Bool {
-        guard let modsFolderURL else { return false }
+        guard let modsFolderURL, let gameFolderID else { return false }
 
         installingModIDs.insert(mod.id)
         installingModName = mod.name ?? mod.id
@@ -704,10 +728,13 @@ final class ModFolderStore: ObservableObject {
                     named: "\(folderName)-\(UUID().uuidString)",
                     in: backupsURL
                 )
-                let priorRecord = installedModRegistry.record(named: folderName)
+                let normalizedPath = normalizedModPath(destinationURL)
+                let priorRecord = installedModRegistry.record(gameFolderID: gameFolderID, modPath: normalizedPath)
                     ?? InstalledModRecord(
+                        gameFolderID: gameFolderID,
                         name: folderName,
                         path: destinationURL.path,
+                        normalizedModPath: normalizedPath,
                         dependencies: [],
                         currentVersion: nil,
                         orphaned: false,
@@ -717,8 +744,10 @@ final class ModFolderStore: ObservableObject {
                     destinationPath: destinationURL.path,
                     backupPath: backup.path,
                     replacementRecord: InstalledModRecord(
+                        gameFolderID: gameFolderID,
                         name: folderName,
                         path: destinationURL.path,
+                        normalizedModPath: normalizedPath,
                         dependencies: dependencies,
                         currentVersion: mod.version,
                         orphaned: false,
@@ -751,8 +780,10 @@ final class ModFolderStore: ObservableObject {
                 throw error
             }
             let replacementRecord = InstalledModRecord(
+                gameFolderID: gameFolderID,
                 name: folderName,
                 path: destinationURL.path,
+                normalizedModPath: normalizedModPath(destinationURL),
                 dependencies: dependencies,
                 currentVersion: mod.version,
                 orphaned: false,
