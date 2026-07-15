@@ -379,7 +379,10 @@ struct ModThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .task(id: proxy.size) { await loader.load(displaySize: proxy.size) }
+            .task(id: url) {
+                loader.replace(url: url)
+                await loader.load(displaySize: proxy.size)
+            }
         }
         .onDisappear { loader.cancel() }
     }

@@ -18,12 +18,19 @@ final class ThumbnailLoader: ObservableObject {
         return cache
     }()
 
-    private let url: URL?
+    private var url: URL?
     private let session = TrustedDownloadSession()
     private var loadTask: Task<UIImage?, Never>?
 
     init(url: URL?) { self.url = url }
     deinit { loadTask?.cancel() }
+
+    func replace(url: URL?) {
+        guard self.url != url else { return }
+        cancel()
+        self.url = url
+        image = nil
+    }
 
     func load(displaySize: CGSize) async {
         guard image == nil, !isLoading, let url, TrustedDownloadSession.isTrusted(url) else { return }
@@ -37,7 +44,7 @@ final class ThumbnailLoader: ObservableObject {
             await Self.loadImage(url: url, displaySize: displaySize, session: session)
         }
         let result = await loadTask?.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, self.url == url else { return }
         if let result {
             Self.memoryCache.setObject(result, forKey: key, cost: Self.cost(of: result))
             image = result
