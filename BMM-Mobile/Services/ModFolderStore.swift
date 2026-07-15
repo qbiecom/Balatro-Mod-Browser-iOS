@@ -44,6 +44,7 @@ final class ModFolderStore: ObservableObject {
     private var catalogMods: [String: CatalogMod] = [:]
     private var catalogNameAliases: [String: String] = [:]
     private var catalogFolderAliases: [String: String] = [:]
+    private var installedCatalogIDsByPath: [String: String] = [:]
     private var latestCatalogUpdate: FlexibleTimestamp?
     private var catalogRefreshedAt: Date?
     private var detailCache: [String: DetailCacheEntry] = [:]
@@ -194,7 +195,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func presentation(for mod: InstalledMod) -> ModPresentation {
-        let catalogMod = catalogMod(matchingLocalName: mod.name)
+        let catalogMod = catalogMod(forInstalledMod: mod)
         let summary = catalogMod?.cleanedSummary
 
         return ModPresentation(
@@ -263,7 +264,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func loadDetail(for mod: InstalledMod) async {
-        guard let catalogMod = catalogMod(matchingLocalName: mod.name) else { return }
+        guard let catalogMod = catalogMod(forInstalledMod: mod) else { return }
         await loadDetail(for: catalogMod)
     }
 
@@ -478,6 +479,15 @@ final class ModFolderStore: ObservableObject {
                 enabledMods = result.enabled
                 disabledMods = result.disabled
                 installedFolderNames = result.folderNames
+                let installedMods = result.enabled + result.disabled
+                let records = try await fileService.updateRecords(for: installedMods, gameFolderID: gameFolderID)
+                guard !Task.isCancelled, generation == gameFolderGeneration else { return }
+                installedCatalogIDsByPath = Dictionary(
+                    uniqueKeysWithValues: records.compactMap { record in
+                        guard let catalogID = record.catalogID, !catalogID.isEmpty else { return nil }
+                        return (record.normalizedModPath, catalogID)
+                    }
+                )
                 refreshAvailableUpdates()
             } catch is CancellationError {
                 return
@@ -769,6 +779,14 @@ final class ModFolderStore: ObservableObject {
         let key = name.lowercased()
         let canonicalID = catalogNameAliases[key] ?? catalogFolderAliases[key]
         return canonicalID.flatMap { catalogMods[$0] }
+    }
+
+    private func catalogMod(forInstalledMod mod: InstalledMod) -> CatalogMod? {
+        let path = mod.id.standardizedFileURL.path.lowercased()
+        if let catalogID = installedCatalogIDsByPath[path], let catalogMod = catalogMods[catalogID.lowercased()] {
+            return catalogMod
+        }
+        return catalogMod(matchingLocalName: mod.name)
     }
 
     private func persistCatalog(generation: Int) {
@@ -1080,6 +1098,7 @@ final class ModFolderStore: ObservableObject {
         enabledMods = []
         disabledMods = []
         installedFolderNames = []
+        installedCatalogIDsByPath = [:]
         updateAvailableNames = []
         for task in tasks {
             await task.value
