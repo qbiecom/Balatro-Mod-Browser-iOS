@@ -33,9 +33,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var errorMessage = ""
 
     private let bookmarkKey = "gameFolderBookmark"
-    private let catalogCacheKey = "bmiCatalogCacheV2"
-    private let detailCacheKey = "bmiDetailCacheV1"
-    private let downloadsCacheKey = "bmiDownloadsCacheV1"
+    private let catalogFileCache = CatalogFileCache()
     private let downloadSession = TrustedDownloadSession()
     private lazy var fileService = ModFileService(downloadSession: downloadSession)
     private let catalogCacheLifetime: TimeInterval = 60 * 15
@@ -77,8 +75,6 @@ final class ModFolderStore: ObservableObject {
 
     init() {
         loadCachedCatalog()
-        loadCachedDetails()
-        loadCachedDownloads()
         restoreFolderAccess()
     }
 
@@ -197,9 +193,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     func clearCatalogCache() {
-        UserDefaults.standard.removeObject(forKey: catalogCacheKey)
-        UserDefaults.standard.removeObject(forKey: detailCacheKey)
-        UserDefaults.standard.removeObject(forKey: downloadsCacheKey)
+        Task { try? await catalogFileCache.remove() }
         let thumbnailDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ModThumbnails", isDirectory: true)
         try? FileManager.default.removeItem(at: thumbnailDirectory)
@@ -467,30 +461,16 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func loadCachedCatalog() {
-        guard let data = UserDefaults.standard.data(forKey: catalogCacheKey),
-              let cached = try? JSONDecoder().decode(CatalogCache.self, from: data) else {
-            return
-        }
-        catalogMods = indexed(Array(cached.items.values))
-        rebuildCatalogAliases()
-        latestCatalogUpdate = cached.lastUpdatedAt
-        catalogRefreshedAt = cached.refreshedAt
-        catalogItems = uniqueCatalogItems(from: cached.items)
-    }
-
-    private func loadCachedDetails() {
-        guard let data = UserDefaults.standard.data(forKey: detailCacheKey),
-              let cached = try? JSONDecoder().decode([String: DetailCacheEntry].self, from: data) else { return }
-        detailCache = cached
-        applyCachedDetailsToCatalog()
-    }
-
-    private func loadCachedDownloads() {
-        guard let data = UserDefaults.standard.data(forKey: downloadsCacheKey),
-              let cache = try? JSONDecoder().decode(CatalogCache.self, from: data) else { return }
-        downloadsRefreshedAt = cache.refreshedAt
-        for mod in uniqueCatalogItems(from: cache.items) {
-            apply(mod)
+        Task { [weak self] in
+            guard let self, let snapshot = try? await self.catalogFileCache.load() else { return }
+            catalogMods = indexed(Array(snapshot.records.values))
+            detailCache = snapshot.details
+            latestCatalogUpdate = snapshot.latestCatalogUpdate
+            catalogRefreshedAt = snapshot.catalogRefreshedAt
+            downloadsRefreshedAt = snapshot.downloadsRefreshedAt
+            rebuildCatalogAliases()
+            applyCachedDetailsToCatalog()
+            catalogItems = uniqueCatalogItems(from: catalogMods)
         }
     }
 
@@ -549,9 +529,6 @@ final class ModFolderStore: ObservableObject {
             downloadsRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
             persistCatalog()
-            if let data = try? JSONEncoder().encode(CatalogCache(items: catalogMods, lastUpdatedAt: latestCatalogUpdate, refreshedAt: downloadsRefreshedAt ?? Date())) {
-                UserDefaults.standard.set(data, forKey: downloadsCacheKey)
-            }
         } catch {
             return
         }
@@ -647,14 +624,16 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func persistCatalog() {
-        guard let catalogRefreshedAt,
-              let data = try? JSONEncoder().encode(CatalogCache(items: catalogMods, lastUpdatedAt: latestCatalogUpdate, refreshedAt: catalogRefreshedAt)) else { return }
-        UserDefaults.standard.set(data, forKey: catalogCacheKey)
+        persistCache()
     }
 
     private func persistDetails() {
-        guard let data = try? JSONEncoder().encode(detailCache) else { return }
-        UserDefaults.standard.set(data, forKey: detailCacheKey)
+        persistCache()
+    }
+
+    private func persistCache() {
+        let snapshot = CatalogFileCache.Snapshot(records: catalogMods, details: detailCache, latestCatalogUpdate: latestCatalogUpdate, catalogRefreshedAt: catalogRefreshedAt, downloadsRefreshedAt: downloadsRefreshedAt)
+        Task { try? await catalogFileCache.save(snapshot) }
     }
 
     private func beginInstall(_ mod: CatalogMod, replacing: Bool, replacementModURL: URL? = nil) {
