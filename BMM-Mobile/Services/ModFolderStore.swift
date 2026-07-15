@@ -228,16 +228,16 @@ final class ModFolderStore: ObservableObject {
         guard let request = dependencyInstallRequest else { return }
         dependencyInstallRequest = nil
 
-        guard let dependencies = resolvedDependencies(for: request.mod, talismanProvider: talismanProvider) else { return }
+        guard let graph = resolveDependencyGraph(for: request.mod, talismanProvider: talismanProvider) else { return }
 
         startInstallTask {
-            for dependency in dependencies where !self.isInstalled(dependency) {
-                guard await self.downloadAndInstall(dependency) else { return }
+            for dependency in graph.order where !self.isInstalled(dependency) {
+                guard await self.downloadAndInstall(dependency, dependencies: graph.directDependencies[dependency.id.lowercased()] ?? []) else { return }
             }
             _ = await self.downloadAndInstall(
                 request.mod,
                 replacing: request.replacing,
-                dependencies: dependencies.map(\.installFolderName),
+                dependencies: graph.directDependencies[request.mod.id.lowercased()] ?? [],
                 replacementModURL: request.replacementModURL
             )
         }
@@ -567,7 +567,8 @@ final class ModFolderStore: ObservableObject {
         if let talismanOptions = uninstalledTalismanProviderOptions(for: mod) {
             dependencyInstallRequest = DependencyInstallRequest(
                 mod: mod,
-                dependencies: steamoddedDependency(for: mod).flatMap { isInstalled($0) ? nil : $0 }.map { [$0] } ?? [],
+                dependencies: [],
+                directDependencies: [:],
                 talismanProviderOptions: talismanOptions,
                 replacing: replacing,
                 replacementModURL: replacementModURL
@@ -575,12 +576,13 @@ final class ModFolderStore: ObservableObject {
             return
         }
 
-        guard let dependencies = resolvedDependencies(for: mod) else { return }
-        let missingDependencies = dependencies.filter { !isInstalled($0) }
+        guard let graph = resolveDependencyGraph(for: mod) else { return }
+        let missingDependencies = graph.order.filter { !isInstalled($0) }
         if !missingDependencies.isEmpty {
             dependencyInstallRequest = DependencyInstallRequest(
                 mod: mod,
                 dependencies: missingDependencies,
+                directDependencies: graph.directDependencies,
                 talismanProviderOptions: [],
                 replacing: replacing,
                 replacementModURL: replacementModURL
@@ -592,7 +594,7 @@ final class ModFolderStore: ObservableObject {
             _ = await self.downloadAndInstall(
                 mod,
                 replacing: replacing,
-                dependencies: dependencies.map(\.installFolderName),
+                dependencies: graph.directDependencies[mod.id.lowercased()] ?? [],
                 replacementModURL: replacementModURL
             )
         }
@@ -608,29 +610,59 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func resolvedDependencies(for mod: CatalogMod, talismanProvider: CatalogMod? = nil) -> [CatalogMod]? {
-        var dependencies: [CatalogMod] = []
-        if let steamodded = steamoddedDependency(for: mod) {
-            dependencies.append(steamodded)
-        } else if mod.requiresSteamodded == true {
-            showError("\(mod.name ?? mod.id) requires Steamodded, but it is not available in the current catalog.")
-            return nil
+    private struct DependencyGraph {
+        let order: [CatalogMod]
+        let directDependencies: [String: [String]]
+    }
+
+    private func resolveDependencyGraph(for root: CatalogMod, talismanProvider: CatalogMod? = nil) -> DependencyGraph? {
+        var visiting = Set<String>()
+        var visited = Set<String>()
+        var order: [CatalogMod] = []
+        var directDependencies: [String: [String]] = [:]
+        var needsProvider = false
+
+        func visit(_ mod: CatalogMod) -> Bool {
+            let key = mod.id.lowercased()
+            if visited.contains(key) { return true }
+            if !visiting.insert(key).inserted {
+                showError(ModInstallError.dependencyCycle.localizedDescription)
+                return false
+            }
+            var direct: [CatalogMod] = []
+            if mod.requiresSteamodded == true {
+                guard let steamodded = steamoddedDependency(for: mod) else {
+                    showError("\(mod.name ?? mod.id) requires Steamodded, but it is not available in the current catalog.")
+                    return false
+                }
+                direct.append(steamodded)
+            }
+            if mod.requiresTalisman == true {
+                let providers = talismanProviderOptions()
+                guard !providers.isEmpty else {
+                    showError("\(mod.name ?? mod.id) requires Talisman or Amulet, but neither is available in the current catalog.")
+                    return false
+                }
+                guard let provider = talismanProvider ?? providers.first(where: { isInstalled($0) }) else {
+                    needsProvider = true
+                    visiting.remove(key)
+                    return false
+                }
+                direct.append(provider)
+            }
+            directDependencies[key] = Array(Set(direct.map(\.installFolderName))).sorted()
+            for dependency in direct where !isInstalled(dependency) {
+                guard visit(dependency) else { return false }
+            }
+            visiting.remove(key)
+            visited.insert(key)
+            if key != root.id.lowercased() { order.append(mod) }
+            return true
         }
 
-        if mod.requiresTalisman == true {
-            let providers = talismanProviderOptions()
-            guard !providers.isEmpty else {
-                showError("\(mod.name ?? mod.id) requires Talisman or Amulet, but neither is available in the current catalog.")
-                return nil
-            }
-            guard let provider = talismanProvider
-                ?? providers.first(where: { isInstalled($0) }) else {
-                return nil
-            }
-            dependencies.append(provider)
-        }
-
-        return dependencies
+        guard visit(root) else { return nil }
+        if needsProvider { return nil }
+        return DependencyGraph(order: order, directDependencies: directDependencies)
     }
 
     private func steamoddedDependency(for mod: CatalogMod) -> CatalogMod? {

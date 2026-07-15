@@ -256,6 +256,7 @@ nonisolated struct InstalledModRecord: Codable, Identifiable {
 struct DependencyInstallRequest: Identifiable {
     let mod: CatalogMod
     let dependencies: [CatalogMod]
+    let directDependencies: [String: [String]]
     let talismanProviderOptions: [CatalogMod]
     let replacing: Bool
     let replacementModURL: URL?
@@ -299,6 +300,7 @@ enum ModInstallError: LocalizedError {
     case tooManyArchiveFiles
     case insufficientStorage
     case untrustedDownloadURL
+    case dependencyCycle
 
     var errorDescription: String? {
         switch self {
@@ -312,6 +314,7 @@ enum ModInstallError: LocalizedError {
         case .tooManyArchiveFiles: "This archive contains more than 5,000 files."
         case .insufficientStorage: "There is not enough free storage to safely extract this archive."
         case .untrustedDownloadURL: "The download URL or redirect was not from an approved HTTPS host."
+        case .dependencyCycle: "The mod dependency graph contains a cycle."
         }
     }
 }
