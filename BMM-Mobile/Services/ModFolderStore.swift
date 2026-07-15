@@ -958,7 +958,7 @@ final class ModFolderStore: ObservableObject {
         }
 
         do {
-            let downloadURL = try await resolveDownloadURL(for: mod.id)
+            let downloadURL = try await resolveDownloadURL(for: mod)
             try await fileService.downloadAndInstall(from: downloadURL, mod: mod, dependencies: dependencies, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, replacing: replacing ? replacementModURL : nil)
             refreshMods()
             refreshAvailableUpdates()
@@ -971,7 +971,12 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func resolveDownloadURL(for id: String) async throws -> URL {
+    private func resolveDownloadURL(for mod: CatalogMod) async throws -> URL {
+        if mod.name?.normalizedDependencyName == "steamodded" || mod.id.normalizedDependencyName == "steamodded" {
+            return try await latestSteamoddedReleaseURL()
+        }
+
+        let id = mod.id
         let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? id
         guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)/download") else {
@@ -1022,6 +1027,34 @@ final class ModFolderStore: ObservableObject {
             throw ModInstallError.downloadFailed
         }
         return url
+    }
+
+    private func latestSteamoddedReleaseURL() async throws -> URL {
+        struct GitHubRelease: Decodable {
+            let tagName: String
+
+            enum CodingKeys: String, CodingKey {
+                case tagName = "tag_name"
+            }
+        }
+
+        guard let releaseURL = URL(string: "https://api.github.com/repos/Steamodded/smods/releases/latest") else {
+            throw ModInstallError.downloadFailed
+        }
+        var request = URLRequest(url: releaseURL)
+        request.setValue("BMM-Mobile", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await downloadSession.session.data(for: request)
+        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
+            throw ModInstallError.downloadFailed
+        }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        guard let tag = release.tagName.addingPercentEncoding(withAllowedCharacters: allowed),
+              let archiveURL = URL(string: "https://github.com/Steamodded/smods/archive/refs/tags/\(tag).zip") else {
+            throw ModInstallError.downloadFailed
+        }
+        return archiveURL
     }
 
     private func uniqueCatalogItems(from items: [String: CatalogMod]) -> [CatalogMod] {

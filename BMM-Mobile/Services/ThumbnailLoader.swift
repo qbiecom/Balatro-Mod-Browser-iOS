@@ -17,9 +17,15 @@ final class ThumbnailLoader: ObservableObject {
         cache.totalCostLimit = 48 * 1024 * 1024
         return cache
     }()
+    private static let sharedSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.urlCache = URLCache(memoryCapacity: 16 * 1024 * 1024, diskCapacity: 64 * 1024 * 1024)
+        configuration.httpMaximumConnectionsPerHost = 10
+        return URLSession(configuration: configuration)
+    }()
 
     private var url: URL?
-    private let session = TrustedDownloadSession()
     private var loadTask: Task<UIImage?, Never>?
     private var requestToken: UInt = 0
     private var loadingPixelBucket: Int?
@@ -59,14 +65,12 @@ final class ThumbnailLoader: ObservableObject {
         let token = requestToken
         let cacheGeneration = ThumbnailCache.shared.generation
         isLoading = true
-        let session = session.session!
-        loadTask = Task.detached(priority: .utility) {
+        loadTask = Task.detached(priority: .userInitiated) {
             await Self.loadImage(
                 url: url,
                 pixelBucket: pixelBucket,
                 cacheKey: key as String,
-                cacheGeneration: cacheGeneration,
-                session: session
+                cacheGeneration: cacheGeneration
             )
         }
         let result = await loadTask?.value
@@ -109,24 +113,18 @@ final class ThumbnailLoader: ObservableObject {
         loadingPixelBucket = pixelBucket
     }
 
-    private static func loadImage(url: URL, pixelBucket: Int, cacheKey: String, cacheGeneration: UInt, session: URLSession) async -> UIImage? {
+    private static func loadImage(url: URL, pixelBucket: Int, cacheKey: String, cacheGeneration: UInt) async -> UIImage? {
         if let entry = await ThumbnailDiskCache.shared.entry(for: cacheKey, ifGeneration: cacheGeneration) {
             if let image = downsample(data: entry.data, pixelBucket: pixelBucket) { return image }
             await ThumbnailDiskCache.shared.removeEntry(for: cacheKey, ifGeneration: cacheGeneration)
         }
         do {
-            let (bytes, response) = try await session.bytes(from: url)
+            let (data, response) = try await sharedSession.data(from: url)
             guard let response = response as? HTTPURLResponse,
                   200..<300 ~= response.statusCode,
-                  response.expectedContentLength <= Int64(maximumTransferBytes),
+                  data.count <= maximumTransferBytes,
                   let mime = response.mimeType?.lowercased(), acceptedMIMETypes.contains(mime),
                   !Task.isCancelled else { return nil }
-            var data = Data()
-            data.reserveCapacity(min(maximumTransferBytes, max(0, Int(response.expectedContentLength))))
-            for try await byte in bytes {
-                guard !Task.isCancelled, data.count < maximumTransferBytes else { return nil }
-                data.append(byte)
-            }
             guard let image = downsample(data: data, pixelBucket: pixelBucket) else { return nil }
             try? await ThumbnailDiskCache.shared.store(data, for: cacheKey, ifGeneration: cacheGeneration)
             return image

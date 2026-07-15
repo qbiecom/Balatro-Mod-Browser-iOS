@@ -7,6 +7,8 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         "api-bmi.dasguney.com",
         "cdn.dasguney.com",
         "github.com",
+        "api.github.com",
+        "codeload.github.com",
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com",
         "github-releases.githubusercontent.com"
