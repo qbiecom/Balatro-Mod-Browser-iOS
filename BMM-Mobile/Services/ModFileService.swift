@@ -25,11 +25,26 @@ actor ModFileService {
 
     func scan(modsFolderURL: URL, gameFolderID: String) throws -> ScanResult {
         try Task.checkCancellation()
-        let mods = try fileManager.contentsOfDirectory(
-            at: modsFolderURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
+        do {
+            guard try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                throw ModFileServiceError.folderAccess(modsFolderURL)
+            }
+        } catch let error as ModFileServiceError {
+            throw error
+        } catch {
+            throw ModFileServiceError.folderAccess(modsFolderURL)
+        }
+        let entries: [URL]
+        do {
+            entries = try fileManager.contentsOfDirectory(
+                at: modsFolderURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw ModFileServiceError.folderAccess(modsFolderURL)
+        }
+        let mods = entries
         .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
         .filter { $0.lastPathComponent.caseInsensitiveCompare("lovely") != .orderedSame }
         .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
@@ -245,11 +260,14 @@ actor ModFileService {
 
 enum ModFileServiceError: LocalizedError {
     case hasDependents([String])
+    case folderAccess(URL)
 
     var errorDescription: String? {
         switch self {
         case let .hasDependents(names):
             "This mod is required by: \(names.joined(separator: ", ")). Remove those mods first."
+        case .folderAccess:
+            "BMM Mobile could not read this game's Mods folder. Re-select the game folder to restore access; installed mods have not been changed."
         }
     }
 }
