@@ -67,12 +67,27 @@ actor ModFileService {
     func setEnabled(_ enabled: Bool, modURL: URL) throws {
         try Task.checkCancellation()
         let ignoreURL = modURL.appendingPathComponent(".lovelyignore")
-        if enabled {
-            if fileManager.fileExists(atPath: ignoreURL.path) { try fileManager.removeItem(at: ignoreURL) }
-        } else {
-            guard fileManager.createFile(atPath: ignoreURL.path, contents: Data()) else {
+        let previousMarker = fileManager.fileExists(atPath: ignoreURL.path)
+            ? try Data(contentsOf: ignoreURL)
+            : nil
+
+        do {
+            if enabled {
+                if previousMarker != nil { try fileManager.removeItem(at: ignoreURL) }
+            } else {
+                try Data().write(to: ignoreURL, options: .atomic)
+            }
+
+            guard fileManager.fileExists(atPath: ignoreURL.path) == !enabled else {
                 throw CocoaError(.fileWriteUnknown)
             }
+        } catch {
+            if let previousMarker {
+                try? previousMarker.write(to: ignoreURL, options: .atomic)
+            } else {
+                try? fileManager.removeItem(at: ignoreURL)
+            }
+            throw error
         }
     }
 
