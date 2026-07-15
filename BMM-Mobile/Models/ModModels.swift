@@ -297,6 +297,7 @@ enum ModInstallError: LocalizedError {
     case unsafeArchive
     case archiveTooLarge
     case tooManyArchiveFiles
+    case insufficientStorage
 
     var errorDescription: String? {
         switch self {
@@ -307,7 +308,8 @@ enum ModInstallError: LocalizedError {
         case .unsupportedArchive: "This archive format is not supported. Please use a ZIP release."
         case .unsafeArchive: "This archive contains an unsafe file path."
         case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
-        case .tooManyArchiveFiles: "This archive contains more than 10,000 files."
+        case .tooManyArchiveFiles: "This archive contains more than 5,000 files."
+        case .insufficientStorage: "There is not enough free storage to safely extract this archive."
         }
     }
 }

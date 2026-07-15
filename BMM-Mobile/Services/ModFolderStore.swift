@@ -672,12 +672,7 @@ final class ModFolderStore: ObservableObject {
 
         do {
             let downloadURL = try await resolveDownloadURL(for: mod.id)
-            let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
-            guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-                throw ModInstallError.downloadFailed
-            }
-
-            try await fileService.install(downloadURL: temporaryURL, mod: mod, dependencies: dependencies, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, replacing: replacing ? replacementModURL : nil)
+            try await fileService.downloadAndInstall(from: downloadURL, mod: mod, dependencies: dependencies, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, replacing: replacing ? replacementModURL : nil)
             refreshMods()
             refreshAvailableUpdates()
             return true

@@ -3,8 +3,11 @@ import ZIPFoundation
 
 /// Serializes all mutable game-folder and registry access off the main actor.
 actor ModFileService {
-    private static let maximumArchiveFileCount = 10_000
-    private static let maximumArchiveUncompressedSize: UInt64 = 2 * 1024 * 1024 * 1024
+    private static let maximumArchiveCompressedSize: Int64 = 256 * 1024 * 1024
+    private static let maximumArchiveFileCount = 5_000
+    private static let maximumArchiveUncompressedSize: UInt64 = 1 * 1024 * 1024 * 1024
+    private static let maximumArchiveEntrySize: UInt64 = 128 * 1024 * 1024
+    private static let maximumArchivePathDepth = 32
     private let fileManager = FileManager.default
     private let registry = InstalledModRegistry()
     private let recoveryStore = UpdateRecoveryStore()
@@ -94,17 +97,16 @@ actor ModFileService {
         }
     }
 
-    func install(
-        downloadURL: URL,
+    func downloadAndInstall(
+        from downloadURL: URL,
         mod: CatalogMod,
         dependencies: [String],
         modsFolderURL: URL,
         gameFolderID: String,
         replacing replacementModURL: URL?
-    ) throws {
+    ) async throws {
         try Task.checkCancellation()
-        let archiveURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try fileManager.moveItem(at: downloadURL, to: archiveURL)
+        let archiveURL = try await downloadArchive(from: downloadURL)
         defer { try? fileManager.removeItem(at: archiveURL) }
         let destinationURL: URL
         let folderName: String
@@ -167,9 +169,61 @@ actor ModFileService {
         }
     }
 
+    private func downloadArchive(from url: URL) async throws -> URL {
+        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else { throw ModInstallError.downloadFailed }
+        if let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init), length > Self.maximumArchiveCompressedSize {
+            throw ModInstallError.archiveTooLarge
+        }
+        let archiveURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        fileManager.createFile(atPath: archiveURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: archiveURL)
+        var received: Int64 = 0
+        var buffer = Data()
+        buffer.reserveCapacity(64 * 1024)
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                received += 1
+                guard received <= Self.maximumArchiveCompressedSize else { throw ModInstallError.archiveTooLarge }
+                buffer.append(byte)
+                if buffer.count == 64 * 1024 {
+                    try handle.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+            if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+            try handle.close()
+            return archiveURL
+        } catch {
+            try? handle.close()
+            try? fileManager.removeItem(at: archiveURL)
+            throw error
+        }
+    }
+
     private func isZIPArchive(at url: URL) throws -> Bool { let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; let magic = try handle.read(upToCount: 4) ?? Data(); return magic.starts(with: [0x50, 0x4B, 0x03, 0x04]) || magic.starts(with: [0x50, 0x4B, 0x05, 0x06]) || magic.starts(with: [0x50, 0x4B, 0x07, 0x08]) }
-    private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL) throws { let archive = try Archive(url: archiveURL, accessMode: .read); var count = 0; var size: UInt64 = 0; for entry in archive { try Task.checkCancellation(); count += 1; guard count <= Self.maximumArchiveFileCount else { throw ModInstallError.tooManyArchiveFiles }; size += entry.uncompressedSize; guard size <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }; let output = try safeArchiveOutputURL(for: entry.path, in: destinationURL); switch entry.type { case .directory: try fileManager.createDirectory(at: output, withIntermediateDirectories: true); case .file: try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true); _ = try archive.extract(entry, to: output, bufferSize: 64 * 1024); case .symlink: throw ModInstallError.unsafeArchive; @unknown default: throw ModInstallError.unsafeArchive } } }
-    private func safeArchiveOutputURL(for path: String, in destination: URL) throws -> URL { let components = path.replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/", omittingEmptySubsequences: true); guard !components.isEmpty else { return destination }; guard components.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains(":") }) else { throw ModInstallError.unsafeArchive }; return components.reduce(destination) { $0.appendingPathComponent(String($1), isDirectory: false) } }
+    private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL) throws {
+        let archive = try Archive(url: archiveURL, accessMode: .read)
+        var count = 0; var size: UInt64 = 0
+        for entry in archive {
+            try Task.checkCancellation(); count += 1
+            guard count <= Self.maximumArchiveFileCount else { throw ModInstallError.tooManyArchiveFiles }
+            guard entry.uncompressedSize <= Self.maximumArchiveEntrySize else { throw ModInstallError.archiveTooLarge }
+            size += entry.uncompressedSize
+            guard size <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
+            _ = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
+        }
+        let available = try destinationURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage
+        guard available == nil || available! >= Int64(size) else { throw ModInstallError.insufficientStorage }
+        for entry in archive {
+            try Task.checkCancellation()
+            let output = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
+            switch entry.type { case .directory: try fileManager.createDirectory(at: output, withIntermediateDirectories: true); case .file: try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true); _ = try archive.extract(entry, to: output, bufferSize: 64 * 1024); case .symlink: throw ModInstallError.unsafeArchive; @unknown default: throw ModInstallError.unsafeArchive }
+        }
+    }
+    private func safeArchiveOutputURL(for path: String, in destination: URL) throws -> URL { let components = path.replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/", omittingEmptySubsequences: true); guard !components.isEmpty else { return destination }; guard components.count <= Self.maximumArchivePathDepth, components.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains(":") }) else { throw ModInstallError.unsafeArchive }; return components.reduce(destination) { $0.appendingPathComponent(String($1), isDirectory: false) } }
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String { let name = (mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? mod.folderName! : mod.id).trimmingCharacters(in: .whitespacesAndNewlines); let reserved: Set<String> = [".", "..", "mods", "disabled mods", ".bmm backups", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]; let device = name.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""; guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"), name.rangeOfCharacter(from: .controlCharacters) == nil, !reserved.contains(name.lowercased()), !reserved.contains(device) else { throw ModInstallError.unsafeFolderName }; return name }
     private func containedChildURL(named name: String, in rootURL: URL) throws -> URL { let root = rootURL.standardizedFileURL; let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL; guard child.deletingLastPathComponent().path == root.path else { throw ModInstallError.unsafeFolderName }; return child }
     private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL { let destination = url.standardizedFileURL; guard destination.deletingLastPathComponent() == modsFolderURL.standardizedFileURL, (try? destination.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw ModInstallError.invalidUpdateTarget }; return destination }
