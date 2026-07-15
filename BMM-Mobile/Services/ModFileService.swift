@@ -24,7 +24,11 @@ actor ModFileService {
         let folderNames: Set<String>
     }
 
-    func scan(modsFolderURL: URL, gameFolderID: String) throws -> ScanResult {
+    func scan(
+        modsFolderURL: URL,
+        gameFolderID: String,
+        legacyGameFolderIDs: Set<String> = []
+    ) throws -> ScanResult {
         try Task.checkCancellation()
         do {
             let values = try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -58,9 +62,15 @@ actor ModFileService {
 
         let enabled = mods.filter { !fileManager.fileExists(atPath: $0.id.appendingPathComponent(".lovelyignore").path) }
         let disabled = mods.filter { fileManager.fileExists(atPath: $0.id.appendingPathComponent(".lovelyignore").path) }
+        let existingPaths = Set(mods.map { $0.id.standardizedFileURL.path.lowercased() })
+        try registry.migrateRecords(
+            from: legacyGameFolderIDs,
+            to: gameFolderID,
+            existingPaths: existingPaths
+        )
         try registry.reconcile(
             gameFolderID: gameFolderID,
-            existingPaths: Set(mods.map { $0.id.standardizedFileURL.path.lowercased() })
+            existingPaths: existingPaths
         )
         return ScanResult(
             enabled: enabled,
@@ -161,10 +171,20 @@ actor ModFileService {
         try mods.compactMap { try registry.record(gameFolderID: gameFolderID, modPath: $0.id.standardizedFileURL.path.lowercased()) }
     }
 
-    func recoverInterruptedUpdates(modsFolderURL: URL, gameFolderID: String) {
+    func recoverInterruptedUpdates(
+        modsFolderURL: URL,
+        gameFolderID: String,
+        legacyGameFolderIDs: Set<String> = []
+    ) {
         guard !Task.isCancelled,
               let modsFolderIdentity = try? verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID) else { return }
-        for transaction in recoveryStore.load() where transaction.gameFolderID == gameFolderID {
+        let acceptedFolderIDs = legacyGameFolderIDs.union([gameFolderID])
+        for storedTransaction in recoveryStore.load() where acceptedFolderIDs.contains(storedTransaction.gameFolderID) {
+            var transaction = storedTransaction
+            if transaction.gameFolderID != gameFolderID {
+                transaction = transaction.replacingGameFolderID(with: gameFolderID)
+                try? recoveryStore.save(transaction)
+            }
             let destinationURL = URL(fileURLWithPath: transaction.destinationPath)
             let backupURL = URL(fileURLWithPath: transaction.backupPath)
             do {
@@ -187,7 +207,12 @@ actor ModFileService {
             } catch is CancellationError { return }
             catch { continue }
         }
-        recoverInterruptedDeletions(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, modsFolderIdentity: modsFolderIdentity)
+        recoverInterruptedDeletions(
+            modsFolderURL: modsFolderURL,
+            gameFolderID: gameFolderID,
+            legacyGameFolderIDs: legacyGameFolderIDs,
+            modsFolderIdentity: modsFolderIdentity
+        )
     }
 
     // Retains source compatibility while old callers migrate to supplying their active Mods URL.
@@ -359,15 +384,8 @@ actor ModFileService {
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String { let name = (mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? mod.folderName! : mod.id).trimmingCharacters(in: .whitespacesAndNewlines); let reserved: Set<String> = [".", "..", "mods", "disabled mods", ".bmm backups", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]; let device = name.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""; guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"), name.rangeOfCharacter(from: .controlCharacters) == nil, !reserved.contains(name.lowercased()), !reserved.contains(device) else { throw ModInstallError.unsafeFolderName }; return name }
     private func containedChildURL(named name: String, in rootURL: URL) throws -> URL { let root = rootURL.standardizedFileURL; let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL; guard child.deletingLastPathComponent().path == root.path, child.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else { throw ModInstallError.unsafeFolderName }; return child }
     private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL { let destination = url.standardizedFileURL; let values = try? destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]); guard destination.deletingLastPathComponent() == modsFolderURL.standardizedFileURL, destination.resolvingSymlinksInPath().deletingLastPathComponent() == modsFolderURL.resolvingSymlinksInPath(), values?.isDirectory == true, values?.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }; return destination }
-    private func verifyGameFolderIdentity(modsFolderURL: URL, expectedID: String) throws {
-        let gameFolderURL = modsFolderURL.deletingLastPathComponent()
-        let identifier = (try? gameFolderURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier)
-            .map { String(describing: $0) }
-            ?? gameFolderURL.standardizedFileURL.path.lowercased()
-        guard identifier == expectedID else { throw ModInstallError.invalidUpdateTarget }
-    }
     private func verifiedModsFolderIdentity(modsFolderURL: URL, expectedGameFolderID: String) throws -> String {
-        try verifyGameFolderIdentity(modsFolderURL: modsFolderURL, expectedID: expectedGameFolderID)
+        guard !expectedGameFolderID.isEmpty else { throw ModInstallError.invalidUpdateTarget }
         let values = try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileResourceIdentifierKey])
         guard values.isDirectory == true, values.isSymbolicLink != true, let identifier = values.fileResourceIdentifier else { throw ModInstallError.invalidUpdateTarget }
         return String(describing: identifier)
@@ -391,8 +409,19 @@ actor ModFileService {
             guard values.isDirectory == true, values.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }
         }
     }
-    private func recoverInterruptedDeletions(modsFolderURL: URL, gameFolderID: String, modsFolderIdentity: String) {
-        for transaction in deletionRecoveryStore.load() where transaction.gameFolderID == gameFolderID {
+    private func recoverInterruptedDeletions(
+        modsFolderURL: URL,
+        gameFolderID: String,
+        legacyGameFolderIDs: Set<String>,
+        modsFolderIdentity: String
+    ) {
+        let acceptedFolderIDs = legacyGameFolderIDs.union([gameFolderID])
+        for storedTransaction in deletionRecoveryStore.load() where acceptedFolderIDs.contains(storedTransaction.gameFolderID) {
+            var transaction = storedTransaction
+            if transaction.gameFolderID != gameFolderID {
+                transaction = transaction.replacingGameFolderID(with: gameFolderID)
+                try? deletionRecoveryStore.save(transaction)
+            }
             let modURL = URL(fileURLWithPath: transaction.modPath)
             let temporaryURL = URL(fileURLWithPath: transaction.temporaryPath)
             do {
@@ -538,6 +567,32 @@ nonisolated private struct UpdateTransaction: Codable, Identifiable {
         modsFolderIdentity = try values.decodeIfPresent(String.self, forKey: .modsFolderIdentity) ?? ""
         phase = try values.decodeIfPresent(UpdateTransactionPhase.self, forKey: .phase) ?? .originalMoved
     }
+
+    func replacingGameFolderID(with gameFolderID: String) -> UpdateTransaction {
+        UpdateTransaction(
+            id: id,
+            gameFolderID: gameFolderID,
+            modsFolderPath: modsFolderPath,
+            modsFolderIdentity: modsFolderIdentity,
+            destinationPath: destinationPath,
+            backupPath: backupPath,
+            replacementRecord: replacementRecord.replacingGameFolderID(with: gameFolderID),
+            originalRecord: originalRecord.replacingGameFolderID(with: gameFolderID),
+            phase: phase
+        )
+    }
+
+    private init(id: UUID, gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, destinationPath: String, backupPath: String, replacementRecord: InstalledModRecord, originalRecord: InstalledModRecord, phase: UpdateTransactionPhase) {
+        self.id = id
+        self.gameFolderID = gameFolderID
+        self.modsFolderPath = modsFolderPath
+        self.modsFolderIdentity = modsFolderIdentity
+        self.destinationPath = destinationPath
+        self.backupPath = backupPath
+        self.replacementRecord = replacementRecord
+        self.originalRecord = originalRecord
+        self.phase = phase
+    }
 }
 
 nonisolated private final class UpdateRecoveryStore {
@@ -620,6 +675,30 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
             ?? URL(fileURLWithPath: modPath).deletingLastPathComponent().standardizedFileURL.path
         modsFolderIdentity = try values.decodeIfPresent(String.self, forKey: .modsFolderIdentity) ?? ""
         phase = try values.decodeIfPresent(DeletionTransactionPhase.self, forKey: .phase) ?? .moved
+    }
+
+    func replacingGameFolderID(with gameFolderID: String) -> DeletionTransaction {
+        DeletionTransaction(
+            id: id,
+            gameFolderID: gameFolderID,
+            modsFolderPath: modsFolderPath,
+            modsFolderIdentity: modsFolderIdentity,
+            modPath: modPath,
+            temporaryPath: temporaryPath,
+            record: record?.replacingGameFolderID(with: gameFolderID),
+            phase: phase
+        )
+    }
+
+    private init(id: UUID, gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, modPath: String, temporaryPath: String, record: InstalledModRecord?, phase: DeletionTransactionPhase) {
+        self.id = id
+        self.gameFolderID = gameFolderID
+        self.modsFolderPath = modsFolderPath
+        self.modsFolderIdentity = modsFolderIdentity
+        self.modPath = modPath
+        self.temporaryPath = temporaryPath
+        self.record = record
+        self.phase = phase
     }
 }
 

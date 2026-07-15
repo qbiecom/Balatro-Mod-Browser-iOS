@@ -33,6 +33,7 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var errorMessage = ""
 
     private let bookmarkKey = "gameFolderBookmark"
+    private let folderIdentityKey = "gameFolderIdentity"
     private let catalogFileCache = CatalogFileCache()
     private let downloadSession = TrustedDownloadSession()
     private lazy var fileService = ModFileService(downloadSession: downloadSession)
@@ -48,6 +49,8 @@ final class ModFolderStore: ObservableObject {
     private var detailCache: [String: DetailCacheEntry] = [:]
     private var downloadsRefreshedAt: Date?
     private var refreshTask: Task<Void, Never>?
+    private var catalogRefreshTask: Task<Void, Never>?
+    private var detailTasks: [String: Task<CatalogMod?, Never>] = [:]
     private var scanTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, Never>?
     private var updatesTask: Task<Void, Never>?
@@ -56,7 +59,11 @@ final class ModFolderStore: ObservableObject {
     private var isApplicationActive = true
     private var installTask: Task<Void, Never>?
     private var gameFolderGeneration = 0
+    private var catalogGeneration = 0
     private var cacheRevision = 0
+    private var activeGameFolderID: String?
+    private var activeFileResourceIdentifier: AnyHashable?
+    private var legacyGameFolderIDs: Set<String> = []
     private lazy var cacheLoadTask: Task<Void, Never> = Task { [weak self] in
         guard let self, let snapshot = try? await self.catalogFileCache.load(), self.cacheRevision == 0 else { return }
         self.catalogMods = self.indexed(Array(snapshot.records.values))
@@ -74,12 +81,13 @@ final class ModFolderStore: ObservableObject {
     }
 
     private var gameFolderID: String? {
-        guard let gameFolderURL else { return nil }
-        if let identifier = try? gameFolderURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier {
-            return String(describing: identifier)
-        }
-        return gameFolderURL.standardizedFileURL.path.lowercased()
+        activeGameFolderID
     }
+
+    /// Migration seam for ModFileService registry lookup. Its scan/recovery APIs should accept
+    /// `legacyGameFolderIDs: Set<String>` and re-key the first matching legacy registry to
+    /// `gameFolderID`; legacy IDs must never become the identity of new writes.
+    var legacyFolderIdentifiersForRegistryMigration: Set<String> { legacyGameFolderIDs }
 
     var totalModCount: Int { enabledMods.count + disabledMods.count }
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
@@ -97,6 +105,8 @@ final class ModFolderStore: ObservableObject {
 
     isolated deinit {
         refreshTask?.cancel()
+        catalogRefreshTask?.cancel()
+        detailTasks.values.forEach { $0.cancel() }
         scanTask?.cancel()
         recoveryTask?.cancel()
         updatesTask?.cancel()
@@ -118,6 +128,8 @@ final class ModFolderStore: ObservableObject {
             showError("iOS did not grant access to this folder. Please try selecting it again.")
             return
         }
+        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
+        pendingGameFolderSelection = nil
 
         do {
             switch try gameFolderValidation(at: url) {
@@ -211,17 +223,21 @@ final class ModFolderStore: ObservableObject {
     }
 
     func forceRefreshCatalog() {
-        guard !isLoadingCatalog else { return }
-
-        Task {
-            catalogErrorMessage = nil
-            await fetchCatalog(forceDownloads: true)
-        }
+        startCatalogRefresh(forceDownloads: true)
     }
 
     func clearCatalogCache() {
+        catalogGeneration += 1
         cacheRevision += 1
+        let generation = catalogGeneration
         let revision = cacheRevision
+        let oldRefreshTask = catalogRefreshTask
+        let oldDetailTasks = Array(detailTasks.values)
+        catalogRefreshTask = nil
+        detailTasks = [:]
+        oldRefreshTask?.cancel()
+        oldDetailTasks.forEach { $0.cancel() }
+        isLoadingCatalog = true
         ThumbnailCache.shared.invalidateAll()
         catalogMods = [:]
         catalogNameAliases = [:]
@@ -231,10 +247,18 @@ final class ModFolderStore: ObservableObject {
         catalogRefreshedAt = nil
         detailCache = [:]
         downloadsRefreshedAt = nil
-        Task {
+        catalogRefreshTask = Task { [weak self] in
+            guard let self else { return }
             await cacheLoadTask.value
+            await oldRefreshTask?.value
+            for task in oldDetailTasks { _ = await task.value }
+            guard !Task.isCancelled, generation == catalogGeneration else { return }
             try? await catalogFileCache.remove(revision: revision)
-            await fetchCatalog(forceDownloads: true)
+            guard !Task.isCancelled, generation == catalogGeneration else { return }
+            await fetchCatalog(forceDownloads: true, generation: generation, managesLoadingState: false)
+            guard generation == catalogGeneration else { return }
+            isLoadingCatalog = false
+            catalogRefreshTask = nil
         }
     }
 
@@ -260,14 +284,23 @@ final class ModFolderStore: ObservableObject {
             return
         }
 
-        do {
-            let detail = try await fetchModDetail(id: catalogMod.id)
-            detailCache[key] = DetailCacheEntry(mod: detail, refreshedAt: Date())
-            persistDetails()
-            apply(catalogMod.merged(with: detail))
-        } catch {
+        if let task = detailTasks[key] {
+            _ = await task.value
             return
         }
+        let generation = catalogGeneration
+        let task = Task<CatalogMod?, Never> { [weak self] in
+            guard let self else { return nil }
+            return try? await fetchModDetail(id: catalogMod.id)
+        }
+        detailTasks[key] = task
+        let detail = await task.value
+        detailTasks[key] = nil
+        guard !Task.isCancelled, generation == catalogGeneration else { return }
+        guard let detail else { return }
+        detailCache[key] = DetailCacheEntry(mod: detail, refreshedAt: Date())
+        persistDetails(generation: generation)
+        apply(catalogMod.merged(with: detail))
     }
 
     func isInstalled(_ mod: CatalogMod) -> Bool {
@@ -350,14 +383,16 @@ final class ModFolderStore: ObservableObject {
                 UserDefaults.standard.set(refreshedBookmark, forKey: bookmarkKey)
             }
 
-            beginActivatingGameFolder(at: url, bookmark: nil)
+            let identity = UserDefaults.standard.string(forKey: folderIdentityKey) ?? UUID().uuidString
+            beginActivatingGameFolder(at: url, bookmark: nil, identity: identity)
         } catch {
             restoredURL?.stopAccessingSecurityScopedResource()
             UserDefaults.standard.removeObject(forKey: bookmarkKey)
+            UserDefaults.standard.removeObject(forKey: folderIdentityKey)
         }
     }
 
-    private func beginActivatingGameFolder(at url: URL, bookmark suppliedBookmark: Data? = nil) {
+    private func beginActivatingGameFolder(at url: URL, bookmark suppliedBookmark: Data? = nil, identity suppliedIdentity: String? = nil) {
         guard folderTransitionTask == nil else {
             url.stopAccessingSecurityScopedResource()
             showError("Wait for the current folder change to finish before choosing another folder.")
@@ -371,7 +406,7 @@ final class ModFolderStore: ObservableObject {
             }
             do {
                 let bookmark = try suppliedBookmark ?? url.bookmarkData(options: .minimalBookmark)
-                await activateGameFolder(at: url, bookmark: bookmark)
+                await activateGameFolder(at: url, bookmark: bookmark, identity: suppliedIdentity ?? UUID().uuidString)
             } catch {
                 url.stopAccessingSecurityScopedResource()
                 showError(error.localizedDescription)
@@ -380,8 +415,10 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    private func activateGameFolder(at url: URL, bookmark: Data?) async {
-        if activeGameFolderURL?.standardizedFileURL == url.standardizedFileURL {
+    private func activateGameFolder(at url: URL, bookmark: Data?, identity: String) async {
+        let resourceIdentifier = fileResourceIdentifier(for: url)
+        if activeGameFolderURL?.standardizedFileURL == url.standardizedFileURL,
+           activeFileResourceIdentifier == resourceIdentifier {
             url.stopAccessingSecurityScopedResource()
             return
         }
@@ -392,6 +429,10 @@ final class ModFolderStore: ObservableObject {
             return
         }
         if let bookmark { UserDefaults.standard.set(bookmark, forKey: bookmarkKey) }
+        UserDefaults.standard.set(identity, forKey: folderIdentityKey)
+        legacyGameFolderIDs = legacyFolderIdentifiers(for: url)
+        activeGameFolderID = identity
+        activeFileResourceIdentifier = resourceIdentifier
         activeGameFolderURL = url
         gameFolderURL = url
         observeModsFolder()
@@ -428,7 +469,11 @@ final class ModFolderStore: ObservableObject {
             await previousTask?.value
             guard !Task.isCancelled, let self else { return }
             do {
-                let result = try await fileService.scan(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
+                let result = try await fileService.scan(
+                    modsFolderURL: modsFolderURL,
+                    gameFolderID: gameFolderID,
+                    legacyGameFolderIDs: legacyGameFolderIDs
+                )
                 guard !Task.isCancelled, generation == gameFolderGeneration else { return }
                 enabledMods = result.enabled
                 disabledMods = result.disabled
@@ -478,8 +523,11 @@ final class ModFolderStore: ObservableObject {
             previousTask?.cancel()
             await previousTask?.value
             guard !Task.isCancelled, let self else { return }
-            // Integration seam for the recovery API owned by ModFileService.
-            await fileService.recoverInterruptedUpdates(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
+            await fileService.recoverInterruptedUpdates(
+                modsFolderURL: modsFolderURL,
+                gameFolderID: gameFolderID,
+                legacyGameFolderIDs: legacyGameFolderIDs
+            )
             guard !Task.isCancelled, generation == gameFolderGeneration else { return }
             refreshMods()
         }
@@ -541,10 +589,11 @@ final class ModFolderStore: ObservableObject {
     }
 
     func refreshCatalogIfNeeded() {
-        guard catalogNeedsRefresh else { return }
-
-        Task {
-            await fetchCatalog()
+        Task { [weak self] in
+            guard let self else { return }
+            await cacheLoadTask.value
+            guard catalogNeedsRefresh else { return }
+            startCatalogRefresh()
         }
     }
 
@@ -555,31 +604,31 @@ final class ModFolderStore: ObservableObject {
         return Date().timeIntervalSince(catalogRefreshedAt) > catalogCacheLifetime
     }
 
-    private func loadCachedCatalog() {
-        Task { [weak self] in
-            guard let self, let snapshot = try? await self.catalogFileCache.load() else { return }
-            catalogMods = indexed(Array(snapshot.records.values))
-            detailCache = snapshot.details
-            latestCatalogUpdate = snapshot.latestCatalogUpdate
-            catalogRefreshedAt = snapshot.catalogRefreshedAt
-            downloadsRefreshedAt = snapshot.downloadsRefreshedAt
-            rebuildCatalogAliases()
-            applyCachedDetailsToCatalog()
-            catalogItems = uniqueCatalogItems(from: catalogMods)
+    private func startCatalogRefresh(forceDownloads: Bool = false) {
+        guard catalogRefreshTask == nil else { return }
+        let generation = catalogGeneration
+        catalogRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await fetchCatalog(forceDownloads: forceDownloads, generation: generation)
+            guard generation == catalogGeneration else { return }
+            catalogRefreshTask = nil
         }
     }
 
-    private func fetchCatalog(forceDownloads: Bool = false) async {
+    private func fetchCatalog(forceDownloads: Bool = false, generation: Int, managesLoadingState: Bool = true) async {
         await cacheLoadTask.value
-        guard !isLoadingCatalog else { return }
+        guard !Task.isCancelled, generation == catalogGeneration else { return }
 
-        isLoadingCatalog = true
+        if managesLoadingState { isLoadingCatalog = true }
         catalogErrorMessage = nil
-        defer { isLoadingCatalog = false }
+        defer {
+            if managesLoadingState, generation == catalogGeneration { isLoadingCatalog = false }
+        }
 
         do {
             if catalogMods.isEmpty || latestCatalogUpdate == nil {
                 let fetched = try await fetchCatalogPages(path: "mods", query: [])
+                guard !Task.isCancelled, generation == catalogGeneration else { return }
                 catalogMods = indexed(fetched)
                 rebuildCatalogAliases()
                 latestCatalogUpdate = fetched.compactMap(\.updatedAt).max { $0.value < $1.value }
@@ -588,6 +637,7 @@ final class ModFolderStore: ObservableObject {
                     path: "mods/changed",
                     query: [URLQueryItem(name: "since", value: String(latestCatalogUpdate.value))]
                 )
+                guard !Task.isCancelled, generation == catalogGeneration else { return }
                 for mod in changed {
                     if mod.isDeleted == true {
                         remove(mod)
@@ -605,26 +655,28 @@ final class ModFolderStore: ObservableObject {
 
             catalogRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
-            persistCatalog()
+            persistCatalog(generation: generation)
             refreshMods()
             refreshAvailableUpdates()
-            await refreshDownloadsIfNeeded(force: forceDownloads)
+            await refreshDownloadsIfNeeded(force: forceDownloads, generation: generation)
         } catch {
+            guard !Task.isCancelled, generation == catalogGeneration else { return }
             catalogErrorMessage = "Couldn’t update the mod catalog. Check your connection and try again."
             return
         }
     }
 
-    private func refreshDownloadsIfNeeded(force: Bool) async {
+    private func refreshDownloadsIfNeeded(force: Bool, generation: Int) async {
         guard force || downloadsRefreshedAt.map({ Date().timeIntervalSince($0) > downloadsCacheLifetime }) ?? true else { return }
         do {
             let mods = try await fetchCatalogPages(path: "mods", query: [])
+            guard !Task.isCancelled, generation == catalogGeneration else { return }
             for mod in mods where mod.downloads != nil {
                 apply(mod)
             }
             downloadsRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
-            persistCatalog()
+            persistCatalog(generation: generation)
         } catch {
             return
         }
@@ -719,19 +771,23 @@ final class ModFolderStore: ObservableObject {
         return canonicalID.flatMap { catalogMods[$0] }
     }
 
-    private func persistCatalog() {
-        persistCache()
+    private func persistCatalog(generation: Int) {
+        persistCache(generation: generation)
     }
 
-    private func persistDetails() {
-        persistCache()
+    private func persistDetails(generation: Int) {
+        persistCache(generation: generation)
     }
 
-    private func persistCache() {
+    private func persistCache(generation: Int) {
+        guard generation == catalogGeneration else { return }
         cacheRevision += 1
         let revision = cacheRevision
         let snapshot = CatalogFileCache.Snapshot(records: catalogMods, details: detailCache, latestCatalogUpdate: latestCatalogUpdate, catalogRefreshedAt: catalogRefreshedAt, downloadsRefreshedAt: downloadsRefreshedAt)
-        Task { try? await catalogFileCache.save(snapshot, revision: revision) }
+        Task { [weak self] in
+            guard let self, generation == self.catalogGeneration else { return }
+            try? await catalogFileCache.save(snapshot, revision: revision)
+        }
     }
 
     private func beginInstall(_ mod: CatalogMod, replacing: Bool, replacementModURL: URL? = nil) {
@@ -991,11 +1047,27 @@ final class ModFolderStore: ObservableObject {
         enabledMods = []
         disabledMods = []
         installedFolderNames = []
+        updateAvailableNames = []
         for task in tasks {
             await task.value
         }
         activeGameFolderURL?.stopAccessingSecurityScopedResource()
         activeGameFolderURL = nil
+        activeGameFolderID = nil
+        activeFileResourceIdentifier = nil
+        legacyGameFolderIDs = []
+    }
+
+    private func fileResourceIdentifier(for url: URL) -> AnyHashable? {
+        (try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier) as? AnyHashable
+    }
+
+    private func legacyFolderIdentifiers(for url: URL) -> Set<String> {
+        var identifiers = [url.standardizedFileURL.path.lowercased()]
+        if let identifier = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier {
+            identifiers.append(String(describing: identifier))
+        }
+        return Set(identifiers)
     }
 
     private func showError(_ message: String) {

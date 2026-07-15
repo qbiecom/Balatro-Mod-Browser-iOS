@@ -53,6 +53,26 @@ nonisolated final class InstalledModRegistry {
         if reconciled != records { try save(reconciled) }
     }
 
+    /// Moves records for paths that still exist from transient folder IDs to a durable folder ID.
+    func migrateRecords(
+        from legacyGameFolderIDs: Set<String>,
+        to gameFolderID: String,
+        existingPaths: Set<String>
+    ) throws {
+        guard !legacyGameFolderIDs.isEmpty else { return }
+
+        let records = try load()
+        let migrated = records.map { record in
+            guard legacyGameFolderIDs.contains(record.gameFolderID),
+                  existingPaths.contains(record.normalizedModPath) else {
+                return record
+            }
+
+            return replacingGameFolderID(of: record, with: gameFolderID)
+        }
+        if migrated != records { try save(migrated) }
+    }
+
     func record(gameFolderID: String, modPath: String) throws -> InstalledModRecord? {
         try load().first {
             $0.gameFolderID == gameFolderID && $0.normalizedModPath == modPath
@@ -97,7 +117,7 @@ nonisolated final class InstalledModRegistry {
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
         let data = try Data(contentsOf: fileURL)
         do {
-            return try JSONDecoder().decode([InstalledModRecord].self, from: data)
+            return canonicalized(try JSONDecoder().decode([InstalledModRecord].self, from: data))
         } catch {
             let corruptURL = fileURL.deletingPathExtension()
                 .appendingPathExtension("corrupt-\(UUID().uuidString).json")
@@ -108,8 +128,82 @@ nonisolated final class InstalledModRegistry {
 
     private func save(_ records: [InstalledModRecord]) throws {
         try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(records)
+        let data = try JSONEncoder().encode(canonicalized(records))
         try data.write(to: fileURL, options: .atomic)
+    }
+
+    private func canonicalized(_ records: [InstalledModRecord]) -> [InstalledModRecord] {
+        let groups = Dictionary(grouping: records) {
+            "\($0.gameFolderID)\u{0}\($0.normalizedModPath)"
+        }
+
+        return groups.keys.sorted().compactMap { key in
+            guard let candidates = groups[key] else { return nil }
+            let ranked = candidates.sorted(by: isPreferredCanonicalRecord)
+            guard let preferred = ranked.first else { return nil }
+
+            return InstalledModRecord(
+                gameFolderID: preferred.gameFolderID,
+                name: preferred.name,
+                path: preferred.path,
+                normalizedModPath: preferred.normalizedModPath,
+                dependencies: preferred.dependencies,
+                currentVersion: preferred.currentVersion,
+                orphaned: preferred.orphaned,
+                catalogID: preferred.catalogID,
+                dependencyReferences: preferred.dependencyReferences
+            )
+        }
+    }
+
+    private func isPreferredCanonicalRecord(
+        _ lhs: InstalledModRecord,
+        _ rhs: InstalledModRecord
+    ) -> Bool {
+        let lhsLegacy = lhs.gameFolderID.hasPrefix("legacy:")
+        let rhsLegacy = rhs.gameFolderID.hasPrefix("legacy:")
+        if lhsLegacy != rhsLegacy { return !lhsLegacy }
+        if lhs.orphaned != rhs.orphaned { return !lhs.orphaned }
+
+        let lhsCatalog = lhs.catalogID?.isEmpty == false
+        let rhsCatalog = rhs.catalogID?.isEmpty == false
+        if lhsCatalog != rhsCatalog { return lhsCatalog }
+
+        let lhsVersion = lhs.currentVersion?.isEmpty == false
+        let rhsVersion = rhs.currentVersion?.isEmpty == false
+        if lhsVersion != rhsVersion { return lhsVersion }
+
+        let lhsRichness = lhs.dependencies.count + lhs.dependencyReferences.count
+        let rhsRichness = rhs.dependencies.count + rhs.dependencyReferences.count
+        if lhsRichness != rhsRichness { return lhsRichness > rhsRichness }
+
+        return canonicalTieBreaker(for: lhs) < canonicalTieBreaker(for: rhs)
+    }
+
+    private func canonicalTieBreaker(for record: InstalledModRecord) -> String {
+        let references = record.dependencyReferences.map {
+            "\($0.catalogID ?? "")\u{0}\($0.normalizedInstalledPath ?? "")"
+        }.sorted()
+        return ([
+            record.catalogID ?? "", record.currentVersion ?? "", record.name, record.path
+        ] + record.dependencies.sorted() + references).joined(separator: "\u{1}")
+    }
+
+    private func replacingGameFolderID(
+        of record: InstalledModRecord,
+        with gameFolderID: String
+    ) -> InstalledModRecord {
+        InstalledModRecord(
+            gameFolderID: gameFolderID,
+            name: record.name,
+            path: record.path,
+            normalizedModPath: record.normalizedModPath,
+            dependencies: record.dependencies,
+            currentVersion: record.currentVersion,
+            orphaned: record.orphaned,
+            catalogID: record.catalogID,
+            dependencyReferences: record.dependencyReferences
+        )
     }
 }
 

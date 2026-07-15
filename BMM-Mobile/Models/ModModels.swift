@@ -112,7 +112,7 @@ struct CatalogMod: Codable, Identifiable {
         )
     }
 
-    private static func plainText(fromHTML html: String) -> String {
+    nonisolated private static func plainText(fromHTML html: String) -> String {
         html
             .replacingOccurrences(of: "<h1>", with: "\n")
             .replacingOccurrences(of: "</h1>", with: "\n")
@@ -130,7 +130,7 @@ struct CatalogMod: Codable, Identifiable {
             .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
     }
 
-    private static func removingLeadingTitle(from value: String?, matching title: String) -> String? {
+    nonisolated private static func removingLeadingTitle(from value: String?, matching title: String) -> String? {
         guard let value else { return nil }
         var lines = value.components(separatedBy: .newlines)
         guard let firstIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
@@ -141,7 +141,7 @@ struct CatalogMod: Codable, Identifiable {
         return lines.joined(separator: "\n")
     }
 
-    private static func normalizedTitle(_ value: String) -> String {
+    nonisolated private static func normalizedTitle(_ value: String) -> String {
         value.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }
@@ -296,6 +296,20 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         currentVersion = try values.decodeIfPresent(String.self, forKey: .currentVersion)
         orphaned = try values.decode(Bool.self, forKey: .orphaned)
         catalogID = try values.decodeIfPresent(String.self, forKey: .catalogID)
+    }
+
+    func replacingGameFolderID(with gameFolderID: String) -> InstalledModRecord {
+        InstalledModRecord(
+            gameFolderID: gameFolderID,
+            name: name,
+            path: path,
+            normalizedModPath: normalizedModPath,
+            dependencies: dependencies,
+            currentVersion: currentVersion,
+            orphaned: orphaned,
+            catalogID: catalogID,
+            dependencyReferences: dependencyReferences
+        )
     }
 }
 

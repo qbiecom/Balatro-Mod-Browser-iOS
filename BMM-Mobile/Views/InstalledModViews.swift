@@ -364,6 +364,7 @@ struct ModThumbnail: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let pixelBucket = ThumbnailLoader.pixelBucket(for: proxy.size)
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.secondary.opacity(loader.image == nil ? 0.08 : 0.16))
@@ -387,10 +388,9 @@ struct ModThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .task(id: LoadID(url: url, cacheGeneration: cache.generation, displaySize: proxy.size)) {
+            .task(id: LoadID(url: url, cacheGeneration: cache.generation, pixelBucket: pixelBucket)) {
                 loader.replace(url: url)
-                loader.invalidateCache()
-                await loader.load(displaySize: proxy.size)
+                await loader.load(pixelBucket: pixelBucket)
             }
         }
         .onDisappear { loader.cancel() }
@@ -405,18 +405,12 @@ struct ModThumbnail: View {
     private struct LoadID: Equatable {
         let url: URL?
         let cacheGeneration: UInt
-        let widthBucket: Int
-        let heightBucket: Int
+        let pixelBucket: Int
 
-        init(url: URL?, cacheGeneration: UInt, displaySize: CGSize) {
+        init(url: URL?, cacheGeneration: UInt, pixelBucket: Int) {
             self.url = url
             self.cacheGeneration = cacheGeneration
-            widthBucket = Self.bucket(displaySize.width)
-            heightBucket = Self.bucket(displaySize.height)
-        }
-
-        private static func bucket(_ value: CGFloat) -> Int {
-            Int((max(1, value) / 32).rounded(.up))
+            self.pixelBucket = pixelBucket
         }
     }
 }
