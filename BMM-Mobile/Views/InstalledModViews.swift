@@ -355,6 +355,7 @@ struct StatusChip: View {
 struct ModThumbnail: View {
     let url: URL?
     @StateObject private var loader: ThumbnailLoader
+    @ObservedObject private var cache = ThumbnailCache.shared
 
     init(url: URL?) {
         self.url = url
@@ -386,8 +387,9 @@ struct ModThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .task(id: url) {
+            .task(id: LoadID(url: url, cacheGeneration: cache.generation, displaySize: proxy.size)) {
                 loader.replace(url: url)
+                loader.invalidateCache()
                 await loader.load(displaySize: proxy.size)
             }
         }
@@ -398,5 +400,23 @@ struct ModThumbnail: View {
         Image(systemName: "photo")
             .font(.balatroChrome(22))
             .foregroundStyle(.secondary.opacity(0.48))
+    }
+
+    private struct LoadID: Equatable {
+        let url: URL?
+        let cacheGeneration: UInt
+        let widthBucket: Int
+        let heightBucket: Int
+
+        init(url: URL?, cacheGeneration: UInt, displaySize: CGSize) {
+            self.url = url
+            self.cacheGeneration = cacheGeneration
+            widthBucket = Self.bucket(displaySize.width)
+            heightBucket = Self.bucket(displaySize.height)
+        }
+
+        private static func bucket(_ value: CGFloat) -> Int {
+            Int((max(1, value) / 32).rounded(.up))
+        }
     }
 }

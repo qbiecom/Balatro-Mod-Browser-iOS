@@ -8,6 +8,7 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         "cdn.dasguney.com",
         "github.com",
         "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
         "github-releases.githubusercontent.com"
     ]
 
@@ -26,6 +27,7 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
               url.password == nil,
+              url.port == nil || url.port == 443,
               let host = url.host?.lowercased(),
               trustedHosts.contains(host) else { return false }
         return true

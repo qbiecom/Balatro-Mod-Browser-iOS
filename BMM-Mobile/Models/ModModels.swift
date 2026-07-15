@@ -217,12 +217,37 @@ struct DetailCacheEntry: Codable {
     let refreshedAt: Date
 }
 
+/// A dependency identity that remains stable when display names or install folders change.
+/// New callers should persist both values when they are known.
+nonisolated struct InstalledModDependencyReference: Codable, Equatable, Hashable {
+    let catalogID: String?
+    let normalizedInstalledPath: String?
+
+    init(catalogID: String?, normalizedInstalledPath: String?) {
+        self.catalogID = catalogID
+        self.normalizedInstalledPath = normalizedInstalledPath
+    }
+
+    init(from decoder: Decoder) throws {
+        if let legacyValue = try? decoder.singleValueContainer().decode(String.self) {
+            catalogID = legacyValue
+            normalizedInstalledPath = nil
+            return
+        }
+
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        catalogID = try values.decodeIfPresent(String.self, forKey: .catalogID)
+        normalizedInstalledPath = try values.decodeIfPresent(String.self, forKey: .normalizedInstalledPath)
+    }
+}
+
 nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
     let gameFolderID: String
     let name: String
     let path: String
     let normalizedModPath: String
     let dependencies: [String]
+    let dependencyReferences: [InstalledModDependencyReference]
     let currentVersion: String?
     let orphaned: Bool
     let catalogID: String?
@@ -230,7 +255,8 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
     var id: String { "\(gameFolderID):\(normalizedModPath)" }
 
     private enum CodingKeys: String, CodingKey {
-        case gameFolderID, name, path, normalizedModPath, dependencies, currentVersion, orphaned, catalogID
+        case gameFolderID, name, path, normalizedModPath, dependencies, dependencyReferences
+        case currentVersion, orphaned, catalogID
     }
 
     init(
@@ -241,13 +267,16 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         dependencies: [String],
         currentVersion: String?,
         orphaned: Bool,
-        catalogID: String?
+        catalogID: String?,
+        dependencyReferences: [InstalledModDependencyReference]? = nil
     ) {
         self.gameFolderID = gameFolderID
         self.name = name
         self.path = path
         self.normalizedModPath = normalizedModPath
         self.dependencies = dependencies
+        self.dependencyReferences = dependencyReferences
+            ?? dependencies.map { InstalledModDependencyReference(catalogID: $0, normalizedInstalledPath: nil) }
         self.currentVersion = currentVersion
         self.orphaned = orphaned
         self.catalogID = catalogID
@@ -259,7 +288,11 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         path = try values.decode(String.self, forKey: .path)
         gameFolderID = try values.decodeIfPresent(String.self, forKey: .gameFolderID) ?? "legacy:\(path.lowercased())"
         normalizedModPath = try values.decodeIfPresent(String.self, forKey: .normalizedModPath) ?? path.lowercased()
-        dependencies = try values.decode([String].self, forKey: .dependencies)
+        dependencies = try values.decodeIfPresent([String].self, forKey: .dependencies) ?? []
+        dependencyReferences = try values.decodeIfPresent(
+            [InstalledModDependencyReference].self,
+            forKey: .dependencyReferences
+        ) ?? dependencies.map { InstalledModDependencyReference(catalogID: $0, normalizedInstalledPath: nil) }
         currentVersion = try values.decodeIfPresent(String.self, forKey: .currentVersion)
         orphaned = try values.decode(Bool.self, forKey: .orphaned)
         catalogID = try values.decodeIfPresent(String.self, forKey: .catalogID)

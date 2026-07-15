@@ -48,9 +48,25 @@ final class ModFolderStore: ObservableObject {
     private var detailCache: [String: DetailCacheEntry] = [:]
     private var downloadsRefreshedAt: Date?
     private var refreshTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
+    private var updatesTask: Task<Void, Never>?
     private var modsFolderPresenter: ModsFolderPresenter?
     private var isApplicationActive = true
     private var installTask: Task<Void, Never>?
+    private var gameFolderGeneration = 0
+    private var cacheRevision = 0
+    private lazy var cacheLoadTask: Task<Void, Never> = Task { [weak self] in
+        guard let self, let snapshot = try? await self.catalogFileCache.load(), self.cacheRevision == 0 else { return }
+        self.catalogMods = self.indexed(Array(snapshot.records.values))
+        self.detailCache = snapshot.details
+        self.latestCatalogUpdate = snapshot.latestCatalogUpdate
+        self.catalogRefreshedAt = snapshot.catalogRefreshedAt
+        self.downloadsRefreshedAt = snapshot.downloadsRefreshedAt
+        self.rebuildCatalogAliases()
+        self.applyCachedDetailsToCatalog()
+        self.catalogItems = self.uniqueCatalogItems(from: self.catalogMods)
+    }
 
     private var modsFolderURL: URL? {
         gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
@@ -74,13 +90,19 @@ final class ModFolderStore: ObservableObject {
     var isInstallerAvailable: Bool { installerAvailability == .available }
 
     init() {
-        loadCachedCatalog()
+        _ = cacheLoadTask
         restoreFolderAccess()
     }
 
-    deinit {
+    isolated deinit {
         refreshTask?.cancel()
+        scanTask?.cancel()
+        recoveryTask?.cancel()
+        updatesTask?.cancel()
+        installTask?.cancel()
         if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
+        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
+        activeGameFolderURL?.stopAccessingSecurityScopedResource()
     }
 
     func handleFolderSelection(_ result: Result<[URL], Error>) {
@@ -128,28 +150,30 @@ final class ModFolderStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
-        Task {
+        guard reserveFolderOperation() else { return }
+        startInstallTask {
             do {
-                try await fileService.setEnabled(enabled, modURL: mod.id)
-                refreshMods()
+                try await self.fileService.setEnabled(enabled, modURL: mod.id)
+                self.refreshMods()
             } catch is CancellationError {
                 return
             } catch {
-                showError(error.localizedDescription)
+                self.showError(error.localizedDescription)
             }
         }
     }
 
     func delete(_ mod: InstalledMod) {
         guard let gameFolderID else { return }
-        Task {
+        guard reserveFolderOperation() else { return }
+        startInstallTask {
             do {
-                try await fileService.delete(mod: mod, gameFolderID: gameFolderID)
-                refreshMods()
+                try await self.fileService.delete(mod: mod, gameFolderID: gameFolderID)
+                self.refreshMods()
             } catch is CancellationError {
                 return
             } catch {
-                showError(error.localizedDescription)
+                self.showError(error.localizedDescription)
             }
         }
     }
@@ -193,7 +217,8 @@ final class ModFolderStore: ObservableObject {
     }
 
     func clearCatalogCache() {
-        Task { try? await catalogFileCache.remove() }
+        cacheRevision += 1
+        let revision = cacheRevision
         ThumbnailCache.shared.invalidateAll()
         catalogMods = [:]
         catalogNameAliases = [:]
@@ -203,7 +228,11 @@ final class ModFolderStore: ObservableObject {
         catalogRefreshedAt = nil
         detailCache = [:]
         downloadsRefreshedAt = nil
-        Task { await fetchCatalog(forceDownloads: true) }
+        Task {
+            await cacheLoadTask.value
+            try? await catalogFileCache.remove(revision: revision)
+            await fetchCatalog(forceDownloads: true)
+        }
     }
 
     func loadDetail(for mod: InstalledMod) async {
@@ -267,7 +296,10 @@ final class ModFolderStore: ObservableObject {
         guard let request = dependencyInstallRequest else { return }
         dependencyInstallRequest = nil
 
-        guard let graph = resolveDependencyGraph(for: request.mod, talismanProvider: talismanProvider) else { return }
+        guard let graph = resolveDependencyGraph(for: request.mod, talismanProvider: talismanProvider) else {
+            releaseFolderOperation()
+            return
+        }
 
         startInstallTask {
             for dependency in graph.order where !self.isInstalled(dependency) {
@@ -284,6 +316,7 @@ final class ModFolderStore: ObservableObject {
 
     func cancelDependencyInstall() {
         dependencyInstallRequest = nil
+        releaseFolderOperation()
     }
 
     private func restoreFolderAccess() {
@@ -365,9 +398,13 @@ final class ModFolderStore: ObservableObject {
 
     private func refreshMods() {
         guard isApplicationActive, let modsFolderURL, let gameFolderID else { return }
-        Task {
+        let generation = gameFolderGeneration
+        scanTask?.cancel()
+        scanTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 let result = try await fileService.scan(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
+                guard !Task.isCancelled, generation == gameFolderGeneration else { return }
                 enabledMods = result.enabled
                 disabledMods = result.disabled
                 installedFolderNames = result.folderNames
@@ -375,6 +412,7 @@ final class ModFolderStore: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                guard generation == gameFolderGeneration else { return }
                 showError(error.localizedDescription)
             }
         }
@@ -406,9 +444,14 @@ final class ModFolderStore: ObservableObject {
 
     /// Completes an update after a restart, or restores the original if its replacement never arrived.
     private func recoverInterruptedUpdates() {
-        guard let gameFolderID else { return }
-        Task {
-            await fileService.recoverInterruptedUpdates(gameFolderID: gameFolderID)
+        guard let gameFolderID, let modsFolderURL else { return }
+        let generation = gameFolderGeneration
+        recoveryTask?.cancel()
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            // Integration seam for the recovery API owned by ModFileService.
+            await fileService.recoverInterruptedUpdates(modsFolderURL: modsFolderURL, gameFolderID: gameFolderID)
+            guard !Task.isCancelled, generation == gameFolderGeneration else { return }
             refreshMods()
         }
     }
@@ -420,26 +463,49 @@ final class ModFolderStore: ObservableObject {
 
     func update(_ localMod: InstalledMod) {
         guard let gameFolderID, isUpdateAvailable(for: localMod) else { return }
-        Task {
-            guard let record = try? await fileService.updateRecords(for: [localMod], gameFolderID: gameFolderID).first,
+        guard reserveFolderOperation() else { return }
+        startInstallTask {
+            guard let record = try? await self.fileService.updateRecords(for: [localMod], gameFolderID: gameFolderID).first,
                   let catalogID = record.catalogID,
-                  let catalogMod = catalogMods[catalogID.lowercased()] else { return }
-            beginInstall(catalogMod, replacing: true, replacementModURL: localMod.id)
+                  let catalogMod = self.catalogMods[catalogID.lowercased()] else { return }
+            if let providers = self.uninstalledTalismanProviderOptions(for: catalogMod) {
+                // DependencyInstallRequest is the temporary integration seam for the dependency-model owner.
+                self.dependencyInstallRequest = DependencyInstallRequest(mod: catalogMod, dependencies: [], directDependencies: [:], talismanProviderOptions: providers, replacing: true, replacementModURL: localMod.id)
+                return
+            }
+            guard let graph = self.resolveDependencyGraph(for: catalogMod) else { return }
+            let missingDependencies = graph.order.filter { !self.isInstalled($0) }
+            if !missingDependencies.isEmpty {
+                self.dependencyInstallRequest = DependencyInstallRequest(mod: catalogMod, dependencies: missingDependencies, directDependencies: graph.directDependencies, talismanProviderOptions: [], replacing: true, replacementModURL: localMod.id)
+                return
+            }
+            for dependency in graph.order where !self.isInstalled(dependency) {
+                guard await self.downloadAndInstall(dependency, dependencies: graph.directDependencies[dependency.id.lowercased()] ?? []) else { return }
+            }
+            _ = await self.downloadAndInstall(catalogMod, replacing: true, dependencies: graph.directDependencies[catalogMod.id.lowercased()] ?? [], replacementModURL: localMod.id)
         }
     }
 
     private func refreshAvailableUpdates() {
         guard let gameFolderID else { return }
         let mods = enabledMods + disabledMods
-        Task {
+        let generation = gameFolderGeneration
+        updatesTask?.cancel()
+        updatesTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 let records = try await fileService.updateRecords(for: mods, gameFolderID: gameFolderID)
+                guard !Task.isCancelled, generation == gameFolderGeneration else { return }
                 updateAvailableNames = Set(records.compactMap { record in
-                    guard let catalogID = record.catalogID, let catalogMod = catalogMods[catalogID.lowercased()], let current = record.currentVersion, let available = catalogMod.version, current != available else { return nil }
+                    guard let catalogID = record.catalogID, let catalogMod = self.catalogMods[catalogID.lowercased()], let current = record.currentVersion, let available = catalogMod.version, current != available else { return nil }
                     return record.name.lowercased()
                 })
             } catch is CancellationError { return
-            } catch { updateAvailableNames = []; showError(error.localizedDescription) }
+            } catch {
+                guard generation == gameFolderGeneration else { return }
+                updateAvailableNames = []
+                showError(error.localizedDescription)
+            }
         }
     }
 
@@ -473,6 +539,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func fetchCatalog(forceDownloads: Bool = false) async {
+        await cacheLoadTask.value
         guard !isLoadingCatalog else { return }
 
         isLoadingCatalog = true
@@ -630,11 +697,14 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func persistCache() {
+        cacheRevision += 1
+        let revision = cacheRevision
         let snapshot = CatalogFileCache.Snapshot(records: catalogMods, details: detailCache, latestCatalogUpdate: latestCatalogUpdate, catalogRefreshedAt: catalogRefreshedAt, downloadsRefreshedAt: downloadsRefreshedAt)
-        Task { try? await catalogFileCache.save(snapshot) }
+        Task { try? await catalogFileCache.save(snapshot, revision: revision) }
     }
 
     private func beginInstall(_ mod: CatalogMod, replacing: Bool, replacementModURL: URL? = nil) {
+        guard reserveFolderOperation() else { return }
         if let talismanOptions = uninstalledTalismanProviderOptions(for: mod) {
             dependencyInstallRequest = DependencyInstallRequest(
                 mod: mod,
@@ -647,7 +717,10 @@ final class ModFolderStore: ObservableObject {
             return
         }
 
-        guard let graph = resolveDependencyGraph(for: mod) else { return }
+        guard let graph = resolveDependencyGraph(for: mod) else {
+            releaseFolderOperation()
+            return
+        }
         let missingDependencies = graph.order.filter { !isInstalled($0) }
         if !missingDependencies.isEmpty {
             dependencyInstallRequest = DependencyInstallRequest(
@@ -672,13 +745,30 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func startInstallTask(_ operation: @escaping @MainActor () async -> Void) {
-        guard !isFolderOperationBusy else { return }
-        isFolderOperationBusy = true
+        guard isFolderOperationBusy, installTask == nil else { return }
         installTask = Task { [weak self] in
             await operation()
-            self?.isFolderOperationBusy = false
-            self?.installTask = nil
+            guard let self else { return }
+            if dependencyInstallRequest == nil {
+                releaseFolderOperation()
+            } else {
+                installTask = nil
+            }
         }
+    }
+
+    private func reserveFolderOperation() -> Bool {
+        guard !isFolderOperationBusy else {
+            showError(InstallerAvailability.busy.message)
+            return false
+        }
+        isFolderOperationBusy = true
+        return true
+    }
+
+    private func releaseFolderOperation() {
+        isFolderOperationBusy = false
+        installTask = nil
     }
 
     private struct DependencyGraph {
@@ -721,7 +811,7 @@ final class ModFolderStore: ObservableObject {
                 }
                 direct.append(provider)
             }
-            directDependencies[key] = Array(Set(direct.map(\.installFolderName))).sorted()
+            directDependencies[key] = Array(Set(direct.map(\.id))).sorted()
             for dependency in direct where !isInstalled(dependency) {
                 guard visit(dependency) else { return false }
             }
@@ -742,7 +832,13 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func uninstalledTalismanProviderOptions(for mod: CatalogMod) -> [CatalogMod]? {
-        guard mod.requiresTalisman == true else { return nil }
+        var visited = Set<String>()
+        func transitivelyRequiresProvider(_ candidate: CatalogMod) -> Bool {
+            guard visited.insert(candidate.id.lowercased()).inserted else { return false }
+            if candidate.requiresTalisman == true { return true }
+            return steamoddedDependency(for: candidate).map(transitivelyRequiresProvider) ?? false
+        }
+        guard transitivelyRequiresProvider(mod) else { return nil }
         let providers = talismanProviderOptions()
         guard !providers.isEmpty else { return nil }
         return providers.contains(where: isInstalled) ? nil : providers
@@ -851,6 +947,17 @@ final class ModFolderStore: ObservableObject {
     }
 
     private func stopAccessingCurrentFolder() {
+        gameFolderGeneration += 1
+        refreshTask?.cancel()
+        scanTask?.cancel()
+        recoveryTask?.cancel()
+        updatesTask?.cancel()
+        refreshTask = nil
+        scanTask = nil
+        recoveryTask = nil
+        updatesTask = nil
+        if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
+        modsFolderPresenter = nil
         activeGameFolderURL?.stopAccessingSecurityScopedResource()
         activeGameFolderURL = nil
         gameFolderURL = nil

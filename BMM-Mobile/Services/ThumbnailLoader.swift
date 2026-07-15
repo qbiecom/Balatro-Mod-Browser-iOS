@@ -8,8 +8,8 @@ final class ThumbnailLoader: ObservableObject {
     @Published private(set) var image: UIImage?
     @Published private(set) var isLoading = false
 
-    private static let cacheLifetime: TimeInterval = 60 * 60 * 24 * 7
     private static let maximumTransferBytes = 8 * 1024 * 1024
+    private static let pixelBucketInterval = 64
     private static let acceptedMIMETypes: Set<String> = ["image/jpeg", "image/png", "image/webp", "image/gif"]
     fileprivate static let memoryCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
@@ -37,14 +37,15 @@ final class ThumbnailLoader: ObservableObject {
 
     func load(displaySize: CGSize) async {
         guard image == nil, !isLoading, let url, TrustedDownloadSession.isTrusted(url) else { return }
-        let key = Self.cacheKey(for: url, displaySize: displaySize)
+        let pixelBucket = Self.pixelBucket(for: displaySize)
+        let key = Self.cacheKey(for: url, pixelBucket: pixelBucket)
         if let cached = Self.memoryCache.object(forKey: key) { image = cached; return }
 
         loadTask?.cancel()
         isLoading = true
         let session = session.session!
         loadTask = Task.detached(priority: .utility) {
-            await Self.loadImage(url: url, displaySize: displaySize, session: session)
+            await Self.loadImage(url: url, pixelBucket: pixelBucket, cacheKey: key as String, session: session)
         }
         let result = await loadTask?.value
         guard !Task.isCancelled, self.url == url else { return }
@@ -75,15 +76,12 @@ final class ThumbnailLoader: ObservableObject {
         await load(displaySize: displaySize)
     }
 
-    private static func loadImage(url: URL, displaySize: CGSize, session: URLSession) async -> UIImage? {
-        let fileURL = fileURL(for: url)
-        if let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-           let date = values.contentModificationDate,
-           Date().timeIntervalSince(date) < cacheLifetime,
-           let size = values.fileSize, size <= maximumTransferBytes,
-           let image = downsample(fileURL: fileURL, displaySize: displaySize) {
+    private static func loadImage(url: URL, pixelBucket: Int, cacheKey: String, session: URLSession) async -> UIImage? {
+        if let entry = await ThumbnailDiskCache.shared.entry(for: cacheKey),
+           let image = downsample(data: entry.data, pixelBucket: pixelBucket) {
             return image
         }
+        let diskGeneration = await ThumbnailDiskCache.shared.currentGeneration()
         do {
             let (bytes, response) = try await session.bytes(from: url)
             guard let response = response as? HTTPURLResponse,
@@ -97,26 +95,24 @@ final class ThumbnailLoader: ObservableObject {
                 guard !Task.isCancelled, data.count < maximumTransferBytes else { return nil }
                 data.append(byte)
             }
-            guard let image = downsample(data: data, displaySize: displaySize) else { return nil }
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: fileURL, options: .atomic)
+            guard let image = downsample(data: data, pixelBucket: pixelBucket) else { return nil }
+            try await ThumbnailDiskCache.shared.store(data, for: cacheKey, ifGeneration: diskGeneration)
             return image
         } catch { return nil }
     }
 
-    private static func downsample(data: Data? = nil, fileURL: URL? = nil, displaySize: CGSize) -> UIImage? {
-        let source: CGImageSource?
-        if let data { source = CGImageSourceCreateWithData(data as CFData, nil) }
-        else if let fileURL { source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) }
-        else { source = nil }
+    private static func downsample(data: Data, pixelBucket: Int) -> UIImage? {
+        let source = CGImageSourceCreateWithData(data as CFData, nil)
         guard let source else { return nil }
-        let pixels = max(1, Int(max(displaySize.width, displaySize.height) * UIScreen.main.scale))
-        let options: CFDictionary = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: pixels, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
+        let options: CFDictionary = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: pixelBucket, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
         return UIImage(cgImage: image)
     }
 
     private static func cost(of image: UIImage) -> Int { Int(image.size.width * image.size.height * image.scale * image.scale * 4) }
-    private static func cacheKey(for url: URL, displaySize: CGSize) -> NSString { "\(url.absoluteString)#\(Int(displaySize.width))x\(Int(displaySize.height))" as NSString }
-    private static func fileURL(for url: URL) -> URL { let encoded = Data(url.absoluteString.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-"); let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ModThumbnails", isDirectory: true); return directory.appendingPathComponent(encoded).appendingPathExtension("image") }
+    private static func cacheKey(for url: URL, pixelBucket: Int) -> NSString { "\(url.absoluteString)#\(pixelBucket)px" as NSString }
+    private static func pixelBucket(for displaySize: CGSize) -> Int {
+        let pixels = max(1, Int(ceil(max(displaySize.width, displaySize.height) * UIScreen.main.scale)))
+        return ((pixels + pixelBucketInterval - 1) / pixelBucketInterval) * pixelBucketInterval
+    }
 }

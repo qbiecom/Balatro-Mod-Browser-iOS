@@ -11,6 +11,7 @@ actor CatalogFileCache {
     }
 
     private let fileURL: URL
+    private var latestRevision = 0
 
     init(fileManager: FileManager = .default) {
         fileURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -23,12 +24,16 @@ actor CatalogFileCache {
         return try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: fileURL))
     }
 
-    func save(_ snapshot: Snapshot) throws {
+    func save(_ snapshot: Snapshot, revision: Int) throws {
+        guard revision >= latestRevision else { return }
+        latestRevision = revision
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(snapshot).write(to: fileURL, options: .atomic)
     }
 
-    func remove() throws {
+    func remove(revision: Int) throws {
+        guard revision >= latestRevision else { return }
+        latestRevision = revision
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         try FileManager.default.removeItem(at: fileURL)
     }

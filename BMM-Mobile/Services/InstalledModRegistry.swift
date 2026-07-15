@@ -32,15 +32,22 @@ nonisolated final class InstalledModRegistry {
     func reconcile(gameFolderID: String, existingPaths: Set<String>) throws {
         let records = try load()
         let reconciled = records.map { record in
-            InstalledModRecord(
-                gameFolderID: record.gameFolderID,
+            let migratesLegacyRecord = record.gameFolderID.hasPrefix("legacy:")
+                && existingPaths.contains(record.normalizedModPath)
+            guard record.gameFolderID == gameFolderID || migratesLegacyRecord else {
+                return record
+            }
+
+            return InstalledModRecord(
+                gameFolderID: migratesLegacyRecord ? gameFolderID : record.gameFolderID,
                 name: record.name,
                 path: record.path,
                 normalizedModPath: record.normalizedModPath,
                 dependencies: record.dependencies,
                 currentVersion: record.currentVersion,
-                orphaned: record.gameFolderID == gameFolderID && !existingPaths.contains(record.normalizedModPath),
-                catalogID: record.catalogID
+                orphaned: !existingPaths.contains(record.normalizedModPath),
+                catalogID: record.catalogID,
+                dependencyReferences: record.dependencyReferences
             )
         }
         if reconciled != records { try save(reconciled) }
@@ -56,7 +63,33 @@ nonisolated final class InstalledModRegistry {
         let normalizedDependency = dependency.normalizedDependencyName
         return (try load()).filter { record in
             record.gameFolderID == gameFolderID
-                && record.dependencies.contains { $0.normalizedDependencyName == normalizedDependency }
+                && !record.orphaned
+                && (record.dependencies.contains { $0.normalizedDependencyName == normalizedDependency }
+                    || record.dependencyReferences.contains {
+                        $0.catalogID?.normalizedDependencyName == normalizedDependency
+                    })
+        }
+    }
+
+    func dependents(
+        of dependency: InstalledModDependencyReference,
+        in gameFolderID: String
+    ) throws -> [InstalledModRecord] {
+        guard dependency.catalogID != nil || dependency.normalizedInstalledPath != nil else { return [] }
+        return (try load()).filter { record in
+            record.gameFolderID == gameFolderID
+                && !record.orphaned
+                && record.dependencyReferences.contains { reference in
+                    if let path = dependency.normalizedInstalledPath,
+                       reference.normalizedInstalledPath != path {
+                        return false
+                    }
+                    if let catalogID = dependency.catalogID,
+                       reference.catalogID?.caseInsensitiveCompare(catalogID) != .orderedSame {
+                        return false
+                    }
+                    return dependency.catalogID != nil || dependency.normalizedInstalledPath != nil
+                }
         }
     }
 
