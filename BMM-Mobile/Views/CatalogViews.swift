@@ -12,8 +12,8 @@ struct AllModsView: View {
     let layout: TileLayout
     let refresh: () -> Void
     let install: (CatalogMod) -> Void
-    @State private var sort = CatalogSort.name
-    @State private var sortAscending = true
+    @State private var sort = CatalogSort.lastUpdated
+    @State private var sortAscending = false
     @State private var searchText = ""
 
     private var columns: [GridItem] {
@@ -50,14 +50,13 @@ struct AllModsView: View {
                 }
 
                 HStack {
-                    Text("\(sortedMods.count)")
-                        .font(.balatroChrome(12))
-                        .foregroundStyle(.secondary)
                     Spacer()
                     Button {
                         sortAscending.toggle()
                     } label: {
                         Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(sortAscending ? "Sort ascending" : "Sort descending")
                     Menu {
@@ -68,6 +67,8 @@ struct AllModsView: View {
                         }
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Sort mods")
                 }
