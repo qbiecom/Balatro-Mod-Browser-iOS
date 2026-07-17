@@ -31,6 +31,8 @@ final class ModFolderStore: ObservableObject {
     @Published var pendingGameFolderSelection: GameFolderSelection?
     @Published var isShowingError = false
     @Published private(set) var errorMessage = ""
+    @Published var isShowingCatalogInfo = false
+    @Published private(set) var catalogInfoMessage = ""
 
     private let bookmarkKey = "gameFolderBookmark"
     private let folderIdentityKey = "gameFolderIdentity"
@@ -681,12 +683,17 @@ final class ModFolderStore: ObservableObject {
         do {
             let mods = try await fetchCatalogPages(path: "mods", query: [])
             guard !Task.isCancelled, generation == catalogGeneration else { return }
+            let prunedCount = pruneRemovedCatalogMods(using: mods)
             for mod in mods where mod.downloads != nil {
                 apply(mod)
             }
             downloadsRefreshedAt = Date()
             catalogItems = uniqueCatalogItems(from: catalogMods)
             persistCatalog(generation: generation)
+            if prunedCount > 0 {
+                let suffix = prunedCount == 1 ? "" : "s"
+                showCatalogInfo("Pruned \(prunedCount) removed mod\(suffix) from the catalog cache.")
+            }
         } catch {
             return
         }
@@ -752,7 +759,24 @@ final class ModFolderStore: ObservableObject {
 
     private func remove(_ mod: CatalogMod) {
         catalogMods.removeValue(forKey: mod.id.lowercased())
+        detailCache.removeValue(forKey: mod.id.lowercased())
         rebuildCatalogAliases()
+    }
+
+    private func pruneRemovedCatalogMods(using freshMods: [CatalogMod]) -> Int {
+        let incomingIDs = Set(freshMods.map { $0.id.lowercased() })
+        let existingCount = catalogMods.count
+        let minimumTrustedCount = max(10, existingCount / 2)
+        guard !incomingIDs.isEmpty, incomingIDs.count >= minimumTrustedCount else { return 0 }
+
+        let removedIDs = Set(catalogMods.keys).subtracting(incomingIDs)
+        guard !removedIDs.isEmpty else { return 0 }
+        for id in removedIDs {
+            catalogMods.removeValue(forKey: id)
+            detailCache.removeValue(forKey: id)
+        }
+        rebuildCatalogAliases()
+        return removedIDs.count
     }
 
     private func rebuildCatalogAliases() {
@@ -1125,5 +1149,10 @@ final class ModFolderStore: ObservableObject {
     private func showError(_ message: String) {
         errorMessage = message
         isShowingError = true
+    }
+
+    private func showCatalogInfo(_ message: String) {
+        catalogInfoMessage = message
+        isShowingCatalogInfo = true
     }
 }

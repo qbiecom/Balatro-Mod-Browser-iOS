@@ -191,6 +191,11 @@ struct ContentView: View {
         } message: {
             Text(folderStore.errorMessage)
         }
+        .alert("Catalog Updated", isPresented: $folderStore.isShowingCatalogInfo) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(folderStore.catalogInfoMessage)
+        }
         .confirmationDialog(
             "Use This Game Folder?",
             isPresented: Binding(
