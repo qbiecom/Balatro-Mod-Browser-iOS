@@ -28,7 +28,6 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var installingModName: String?
     @Published private(set) var isFolderOperationBusy = false
     @Published var dependencyInstallRequest: DependencyInstallRequest?
-    @Published var pendingGameFolderSelection: GameFolderSelection?
     @Published var isShowingError = false
     @Published private(set) var errorMessage = ""
     @Published var isShowingCatalogInfo = false
@@ -80,7 +79,8 @@ final class ModFolderStore: ObservableObject {
     }
 
     private var modsFolderURL: URL? {
-        gameFolderURL?.appendingPathComponent("Mods", isDirectory: true)
+        guard let gameFolderURL else { return nil }
+        return existingModsFolderURL(in: gameFolderURL)
     }
 
     private var gameFolderID: String? {
@@ -116,7 +116,6 @@ final class ModFolderStore: ObservableObject {
         folderTransitionTask?.cancel()
         installTask?.cancel()
         if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
-        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
         activeGameFolderURL?.stopAccessingSecurityScopedResource()
     }
 
@@ -131,39 +130,13 @@ final class ModFolderStore: ObservableObject {
             showError("iOS did not grant access to this folder. Please try selecting it again.")
             return
         }
-        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
-        pendingGameFolderSelection = nil
-
         do {
-            switch try gameFolderValidation(at: url) {
-            case .valid:
-                beginActivatingGameFolder(at: url)
-            case .requiresConfirmation:
-                pendingGameFolderSelection = GameFolderSelection(url: url)
-            }
+            try gameFolderValidation(at: url)
+            beginActivatingGameFolder(at: url)
         } catch {
             url.stopAccessingSecurityScopedResource()
             showError(error.localizedDescription)
         }
-    }
-
-    func confirmPendingGameFolderSelection() {
-        guard !isFolderOperationBusy, folderTransitionTask == nil else { return }
-        guard let selection = pendingGameFolderSelection else { return }
-        pendingGameFolderSelection = nil
-
-        do {
-            _ = try gameFolderValidation(at: selection.url)
-            beginActivatingGameFolder(at: selection.url)
-        } catch {
-            selection.url.stopAccessingSecurityScopedResource()
-            showError(error.localizedDescription)
-        }
-    }
-
-    func cancelPendingGameFolderSelection() {
-        pendingGameFolderSelection?.url.stopAccessingSecurityScopedResource()
-        pendingGameFolderSelection = nil
     }
 
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
@@ -377,9 +350,7 @@ final class ModFolderStore: ObservableObject {
             }
             restoredURL = url
 
-            guard try gameFolderValidation(at: url) == .valid else {
-                throw GameFolderError.invalidLayout
-            }
+            try gameFolderValidation(at: url)
 
             if isStale {
                 let refreshedBookmark = try url.bookmarkData(options: .minimalBookmark)
@@ -444,23 +415,31 @@ final class ModFolderStore: ObservableObject {
         refreshCatalogIfNeeded()
     }
 
-    private func gameFolderValidation(at url: URL) throws -> GameFolderValidation {
+    private func gameFolderValidation(at url: URL) throws {
         let resourceValues = try url.resourceValues(forKeys: [.isDirectoryKey])
         guard resourceValues.isDirectory == true else {
             throw GameFolderError.notDirectory
         }
 
-        let configURL = url.appendingPathComponent("config", isDirectory: true)
-        let modsURL = url.appendingPathComponent("Mods", isDirectory: true)
-        let hasConfig = (try? configURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        let hasMods = (try? modsURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        guard hasConfig && hasMods else {
+        guard url.lastPathComponent.caseInsensitiveCompare("game") == .orderedSame,
+              existingModsFolderURL(in: url) != nil else {
             throw GameFolderError.invalidLayout
         }
+    }
 
-        return url.lastPathComponent.caseInsensitiveCompare("game") == .orderedSame
-            ? .valid
-            : .requiresConfirmation
+    private func existingModsFolderURL(in gameFolderURL: URL) -> URL? {
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: gameFolderURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        return children.first { child in
+            child.lastPathComponent.caseInsensitiveCompare("Mods") == .orderedSame
+                && (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
     }
 
     private func refreshMods() {

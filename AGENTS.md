@@ -20,7 +20,7 @@ BMM Mobile is a SwiftUI iPad/iOS mod manager for the **Lovely Mobile Maker** ver
 
 ## Lovely Mobile Maker Folder Rules
 
-The selected folder must be the `game` directory containing both `config` and `Mods`.
+The selected folder must be the `game` directory containing `Mods`. The `config` folder can be created later by Lovely Mobile Maker.
 
 - Do not create `Mods` or `Disabled Mods`.
 - Do not write outside the selected `Mods` directory.
