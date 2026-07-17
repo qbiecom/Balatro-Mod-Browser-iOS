@@ -283,23 +283,23 @@ final class ModFolderStore: ObservableObject {
         installedMod(for: mod) != nil
     }
 
-    func installedMod(for catalogMod: CatalogMod) -> InstalledMod? {
+    func installedMod(for targetMod: CatalogMod) -> InstalledMod? {
         let candidates = enabledMods + disabledMods
         if let registryMatch = candidates.first(where: { mod in
             let path = mod.id.standardizedFileURL.path.lowercased()
-            return installedCatalogIDsByPath[path]?.caseInsensitiveCompare(catalogMod.id) == .orderedSame
+            return installedCatalogIDsByPath[path]?.caseInsensitiveCompare(targetMod.id) == .orderedSame
         }) {
             return registryMatch
         }
 
         if let catalogMatch = candidates.first(where: { mod in
-            catalogMod(forInstalledMod: mod)?.id.caseInsensitiveCompare(catalogMod.id) == .orderedSame
+            catalogMod(forInstalledMod: mod)?.id.caseInsensitiveCompare(targetMod.id) == .orderedSame
         }) {
             return catalogMatch
         }
 
         return candidates.first {
-            $0.name.caseInsensitiveCompare(catalogMod.installFolderName) == .orderedSame
+            $0.name.caseInsensitiveCompare(targetMod.installFolderName) == .orderedSame
         }
     }
 
