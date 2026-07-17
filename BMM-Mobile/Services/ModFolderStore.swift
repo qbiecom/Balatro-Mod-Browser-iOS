@@ -280,7 +280,27 @@ final class ModFolderStore: ObservableObject {
     }
 
     func isInstalled(_ mod: CatalogMod) -> Bool {
-        installedFolderNames.contains(mod.installFolderName.lowercased())
+        installedMod(for: mod) != nil
+    }
+
+    func installedMod(for catalogMod: CatalogMod) -> InstalledMod? {
+        let candidates = enabledMods + disabledMods
+        if let registryMatch = candidates.first(where: { mod in
+            let path = mod.id.standardizedFileURL.path.lowercased()
+            return installedCatalogIDsByPath[path]?.caseInsensitiveCompare(catalogMod.id) == .orderedSame
+        }) {
+            return registryMatch
+        }
+
+        if let catalogMatch = candidates.first(where: { mod in
+            catalogMod(forInstalledMod: mod)?.id.caseInsensitiveCompare(catalogMod.id) == .orderedSame
+        }) {
+            return catalogMatch
+        }
+
+        return candidates.first {
+            $0.name.caseInsensitiveCompare(catalogMod.installFolderName) == .orderedSame
+        }
     }
 
     func isInstalling(_ mod: CatalogMod) -> Bool {
@@ -724,6 +744,8 @@ final class ModFolderStore: ObservableObject {
         let current = catalogMods[mod.id.lowercased()]
         catalogMods[mod.id.lowercased()] = current?.merged(with: mod) ?? mod
         rebuildCatalogAliases()
+        // Publishing the refreshed collection redraws catalog detail screens after their lazy detail request completes.
+        catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
     private func applyCachedDetailsToCatalog() {

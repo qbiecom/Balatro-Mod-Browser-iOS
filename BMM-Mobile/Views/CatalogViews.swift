@@ -280,9 +280,18 @@ struct CatalogModDetailView: View {
 
     let mod: CatalogMod
     @ObservedObject var folderStore: ModFolderStore
+    @State private var isShowingDeleteConfirmation = false
 
     private var displayedMod: CatalogMod {
         folderStore.catalogMod(id: mod.id) ?? mod
+    }
+
+    private var installedMod: InstalledMod? {
+        folderStore.installedMod(for: displayedMod)
+    }
+
+    private var isEnabled: Bool {
+        installedMod.map(folderStore.isEnabled) ?? false
     }
 
     var body: some View {
@@ -305,6 +314,20 @@ struct CatalogModDetailView: View {
         .navigationTitle("Mod Details")
         .navigationBarTitleDisplayMode(.inline)
         .task { await folderStore.loadDetail(for: mod) }
+        .confirmationDialog(
+            "Delete \(displayedMod.name ?? displayedMod.id)?",
+            isPresented: $isShowingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Mod", role: .destructive) {
+                if let installedMod {
+                    folderStore.delete(installedMod)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the installed mod folder.")
+        }
     }
 
     private var sidebar: some View {
@@ -326,9 +349,20 @@ struct CatalogModDetailView: View {
                 }
             }
 
-            if folderStore.isInstalled(displayedMod) {
-                Label("Installed", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+            if let installedMod {
+                Toggle(isEnabled ? "Enabled" : "Disabled", isOn: Binding(
+                    get: { isEnabled },
+                    set: { folderStore.setEnabled($0, for: installedMod) }
+                ))
+                .tint(.green)
+
+                Button(role: .destructive) {
+                    isShowingDeleteConfirmation = true
+                } label: {
+                    Label("Delete Mod", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             } else {
                 Button { folderStore.install(displayedMod) } label: {
                     Label(
