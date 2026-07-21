@@ -186,6 +186,14 @@ struct ContentView: View {
         ) { result in
             folderStore.handleFolderSelection(result)
         }
+        .alert("Game Folder Needs Re-linking", isPresented: $folderStore.isShowingGameFolderRelinkNotice) {
+            Button("Choose Game Folder") {
+                isShowingFolderPicker = true
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("Lovely Mobile Maker's game folder is no longer available at its previous location. Select the renewed folder named game so BMM Mobile can reconnect your installed mods.")
+        }
         .alert("Couldn't Update Mod", isPresented: $folderStore.isShowingError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -327,10 +335,12 @@ struct ContentView: View {
                 .foregroundStyle(.blue)
 
             VStack(spacing: 10) {
-                Text("Connect Your Game Folder")
+                Text(folderStore.needsGameFolderRelink ? "Reconnect Your Game Folder" : "Connect Your Game Folder")
                     .font(.balatroChrome(28))
 
-                Text("BMM Mobile needs access to the Lovely Mobile Maker game folder before it can manage mods.")
+                Text(folderStore.needsGameFolderRelink
+                    ? "Lovely Mobile Maker's game folder moved or was renewed. Select its current location to restore BMM Mobile's connection."
+                    : "BMM Mobile needs access to the Lovely Mobile Maker game folder before it can manage mods.")
                     .font(.balatroChrome(16))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -348,7 +358,7 @@ struct ContentView: View {
             Button {
                 isShowingFolderPicker = true
             } label: {
-                Label("Choose Game Folder", systemImage: "folder")
+                Label(folderStore.needsGameFolderRelink ? "Reconnect Game Folder" : "Choose Game Folder", systemImage: "folder")
                     .font(.balatroChrome(18))
                     .frame(minWidth: 210)
             }

@@ -28,6 +28,8 @@ final class ModFolderStore: ObservableObject {
     @Published private(set) var installingModName: String?
     @Published private(set) var isFolderOperationBusy = false
     @Published var dependencyInstallRequest: DependencyInstallRequest?
+    @Published private(set) var needsGameFolderRelink = false
+    @Published var isShowingGameFolderRelinkNotice = false
     @Published var isShowingError = false
     @Published private(set) var errorMessage = ""
     @Published var isShowingCatalogInfo = false
@@ -35,6 +37,7 @@ final class ModFolderStore: ObservableObject {
 
     private let bookmarkKey = "gameFolderBookmark"
     private let folderIdentityKey = "gameFolderIdentity"
+    private let pendingRelinkIdentityKey = "pendingGameFolderRelinkIdentity"
     private let catalogFileCache = CatalogFileCache()
     private let downloadSession = TrustedDownloadSession()
     private lazy var fileService = ModFileService(downloadSession: downloadSession)
@@ -132,7 +135,10 @@ final class ModFolderStore: ObservableObject {
         }
         do {
             try gameFolderValidation(at: url)
-            beginActivatingGameFolder(at: url)
+            let relinkIdentity = needsGameFolderRelink
+                ? UserDefaults.standard.string(forKey: pendingRelinkIdentityKey)
+                : nil
+            beginActivatingGameFolder(at: url, identity: relinkIdentity)
         } catch {
             url.stopAccessingSecurityScopedResource()
             showError(error.localizedDescription)
@@ -353,6 +359,7 @@ final class ModFolderStore: ObservableObject {
 
     private func restoreFolderAccess() {
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
+        let storedIdentity = UserDefaults.standard.string(forKey: folderIdentityKey)
         var restoredURL: URL?
 
         do {
@@ -365,7 +372,7 @@ final class ModFolderStore: ObservableObject {
             )
 
             guard url.startAccessingSecurityScopedResource() else {
-                UserDefaults.standard.removeObject(forKey: bookmarkKey)
+                markGameFolderForRelink(previousIdentity: storedIdentity)
                 return
             }
             restoredURL = url
@@ -381,9 +388,18 @@ final class ModFolderStore: ObservableObject {
             beginActivatingGameFolder(at: url, bookmark: nil, identity: identity)
         } catch {
             restoredURL?.stopAccessingSecurityScopedResource()
-            UserDefaults.standard.removeObject(forKey: bookmarkKey)
-            UserDefaults.standard.removeObject(forKey: folderIdentityKey)
+            markGameFolderForRelink(previousIdentity: storedIdentity)
         }
+    }
+
+    private func markGameFolderForRelink(previousIdentity: String?) {
+        if let previousIdentity, !previousIdentity.isEmpty {
+            UserDefaults.standard.set(previousIdentity, forKey: pendingRelinkIdentityKey)
+        }
+        UserDefaults.standard.removeObject(forKey: bookmarkKey)
+        UserDefaults.standard.removeObject(forKey: folderIdentityKey)
+        needsGameFolderRelink = true
+        isShowingGameFolderRelinkNotice = true
     }
 
     private func beginActivatingGameFolder(at url: URL, bookmark suppliedBookmark: Data? = nil, identity suppliedIdentity: String? = nil) {
@@ -424,6 +440,9 @@ final class ModFolderStore: ObservableObject {
         }
         if let bookmark { UserDefaults.standard.set(bookmark, forKey: bookmarkKey) }
         UserDefaults.standard.set(identity, forKey: folderIdentityKey)
+        UserDefaults.standard.removeObject(forKey: pendingRelinkIdentityKey)
+        needsGameFolderRelink = false
+        isShowingGameFolderRelinkNotice = false
         legacyGameFolderIDs = legacyFolderIdentifiers(for: url)
         activeGameFolderID = identity
         activeFileResourceIdentifier = resourceIdentifier
@@ -802,6 +821,12 @@ final class ModFolderStore: ObservableObject {
 
     private func catalogMod(matchingLocalName name: String) -> CatalogMod? {
         let key = name.lowercased()
+        // BMI commonly uses publisher@mod as its stable ID and as the installed folder name.
+        // A registry can be unavailable after the game container is replaced, so always try
+        // that stable ID before the human-readable name and optional folder-name aliases.
+        if let directIDMatch = catalogMods[key] {
+            return directIDMatch
+        }
         let canonicalID = catalogNameAliases[key] ?? catalogFolderAliases[key]
         return canonicalID.flatMap { catalogMods[$0] }
     }

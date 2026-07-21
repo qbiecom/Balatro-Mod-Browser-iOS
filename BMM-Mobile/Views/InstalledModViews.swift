@@ -69,21 +69,23 @@ struct ModTile: View {
                     .foregroundStyle(isEnabled ? .green : .secondary)
                     .accessibilityLabel(isEnabled ? "Enabled" : "Disabled")
 
-                Spacer()
+                if isUpdateAvailable {
+                    Button(action: update) {
+                        Label("Update", systemImage: "arrow.down.circle")
+                            .font(.balatroChrome(15))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Update \(mod.name)")
+                } else {
+                    Spacer()
+                }
 
                 Toggle(mod.name, isOn: Binding(
                     get: { isEnabled },
                     set: { _ in toggle() }
                 ))
                 .labelsHidden()
-
-                if isUpdateAvailable {
-                    Button(action: update) {
-                        Image(systemName: "arrow.down.circle.fill")
-                    }
-                    .accessibilityLabel("Update \(mod.name)")
-                    .tint(.blue)
-                }
 
                 Button(role: .destructive, action: delete) {
                     Image(systemName: "trash")
@@ -165,6 +167,19 @@ private struct ModDetailView: View {
                 if isUpdateAvailable {
                     StatusChip(title: "Update", color: .orange)
                 }
+            }
+
+            if let mod, isUpdateAvailable {
+                Button {
+                    folderStore.update(mod)
+                } label: {
+                    Label("Update Mod", systemImage: "arrow.down.circle")
+                        .font(.balatroChrome(16))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!folderStore.isInstallerAvailable)
+                .accessibilityHint(folderStore.installerAvailability.message)
             }
 
             if let downloads = presentation.downloads {
