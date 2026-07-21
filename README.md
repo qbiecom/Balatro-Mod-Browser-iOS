@@ -2,6 +2,12 @@
 
 BMM Mobile is an iPad-friendly mod manager for Balatro. It lets you browse the Balatro Mod Index, install and update mods, enable or disable installed mods, and view mod information.
 
+## Demo
+
+[![BMM Mobile introduction video](https://vumbnail.com/1210836337.jpg)](https://vimeo.com/1210836337)
+
+Watch the [BMM Mobile introduction on Vimeo](https://vimeo.com/1210836337).
+
 ## Important
 
 This app only works with the **Lovely Mobile Maker** version of Balatro. It does not support the official App Store version of Balatro.
