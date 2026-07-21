@@ -333,7 +333,7 @@ enum GameFolderError: LocalizedError {
         case .notDirectory:
             "Please select the Lovely Mobile Maker game folder, not a file."
         case .invalidLayout:
-            "This is not a Lovely Mobile Maker game folder. Select the folder named game that contains Mods."
+            "This is not a Lovely Mobile Maker game folder. Select the folder named game."
         }
     }
 }

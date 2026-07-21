@@ -348,7 +348,6 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Label("Select the folder named game", systemImage: "checkmark.circle.fill")
-                Label("It must contain the Mods folder", systemImage: "checkmark.circle.fill")
                 Label("Do not select Mods on its own", systemImage: "xmark.circle.fill")
             }
             .font(.balatroChrome(15))

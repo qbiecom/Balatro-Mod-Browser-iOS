@@ -460,8 +460,7 @@ final class ModFolderStore: ObservableObject {
             throw GameFolderError.notDirectory
         }
 
-        guard url.lastPathComponent.caseInsensitiveCompare("game") == .orderedSame,
-              existingModsFolderURL(in: url) != nil else {
+        guard url.lastPathComponent.caseInsensitiveCompare("game") == .orderedSame else {
             throw GameFolderError.invalidLayout
         }
     }
