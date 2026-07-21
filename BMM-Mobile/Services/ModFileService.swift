@@ -511,7 +511,7 @@ enum ModFileServiceError: LocalizedError {
         case let .hasDependents(names):
             "This mod is required by: \(names.joined(separator: ", ")). Remove those mods first."
         case .folderAccess:
-            "BMM Mobile could not read this game's Mods folder. Re-select the game folder to restore access; installed mods have not been changed."
+            "Balatro Mod Browser could not read this game's Mods folder. Re-select the game folder to restore access; installed mods have not been changed."
         }
     }
 }

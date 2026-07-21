@@ -154,7 +154,7 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("BMM Mobile")
+                    Text("Balatro Mod Browser")
                         .font(.balatroChrome(24))
                 }
             }
@@ -192,7 +192,7 @@ struct ContentView: View {
             }
             Button("Not Now", role: .cancel) {}
         } message: {
-            Text("Lovely Mobile Maker's game folder is no longer available at its previous location. Select the renewed folder named game so BMM Mobile can reconnect your installed mods.")
+            Text("Lovely Mobile Maker's game folder is no longer available at its previous location. Select the renewed folder named game so Balatro Mod Browser can reconnect your installed mods.")
         }
         .alert("Couldn't Update Mod", isPresented: $folderStore.isShowingError) {
             Button("OK", role: .cancel) {}
@@ -339,8 +339,8 @@ struct ContentView: View {
                     .font(.balatroChrome(28))
 
                 Text(folderStore.needsGameFolderRelink
-                    ? "Lovely Mobile Maker's game folder moved or was renewed. Select its current location to restore BMM Mobile's connection."
-                    : "BMM Mobile needs access to the Lovely Mobile Maker game folder before it can manage mods.")
+                    ? "Lovely Mobile Maker's game folder moved or was renewed. Select its current location to restore Balatro Mod Browser's connection."
+                    : "Balatro Mod Browser needs access to the Lovely Mobile Maker game folder before it can manage mods.")
                     .font(.balatroChrome(16))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
