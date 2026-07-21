@@ -12,6 +12,10 @@ Watch the [Balatro Mod Browser introduction on Vimeo](https://vimeo.com/12108363
 
 This app only works with the **Lovely Mobile Maker** version of Balatro. It does not support the official App Store version of Balatro.
 
+## Compatibility
+
+Balatro Mod Browser requires iOS or iPadOS 17 or later. It has been tested on iPadOS 26 and iPadOS 27.
+
 ## Features
 
 - Browse and search mods from the Balatro Mod Index
