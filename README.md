@@ -22,7 +22,7 @@ This app only works with the **Lovely Mobile Maker** version of Balatro. It does
 
 ## Installing
 
-Balatro Mod Browser is intended for sideloading on iOS and iPadOS. Build the project in Xcode or use the included unsigned IPA with a sideloading tool such as Sideloadly.
+Balatro Mod Browser is intended for sideloading on iOS and iPadOS. Download the unsigned IPA and sideload it with an app such as Sideloadly.
 
 After opening the app, choose the Lovely Mobile Maker game folder. Balatro Mod Browser manages its `Mods` directory.
 

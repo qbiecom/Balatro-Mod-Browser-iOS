@@ -1,0 +1,64 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    name: Build Balatro Mod Browser IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Archive unsigned app
+        run: |
+          xcodebuild archive \
+            -project BMM-Mobile.xcodeproj \
+            -scheme BMM-Mobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Balatro-Mod-Browser.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          APP_PATH="$RUNNER_TEMP/Balatro-Mod-Browser.xcarchive/Products/Applications/BMM-Mobile.app"
+          IPA_ROOT="$RUNNER_TEMP/ipa"
+          IPA_PATH="$GITHUB_WORKSPACE/BMB.ipa"
+
+          test -d "$APP_PATH"
+          mkdir -p "$IPA_ROOT/Payload"
+          ditto "$APP_PATH" "$IPA_ROOT/Payload/BMM-Mobile.app"
+          ditto -c -k --sequesterRsrc --keepParent "$IPA_ROOT/Payload" "$IPA_PATH"
+          unzip -t "$IPA_PATH"
+
+      - name: Derive release reference
+        id: release_ref
+        run: |
+          echo "tag=build-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "title=Balatro Mod Browser build ${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.release_ref.outputs.title }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" BMB.ipa --clobber
+          else
+            gh release create "$RELEASE_TAG" BMB.ipa \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes "Unsigned IPA built from commit $GITHUB_SHA. Install with Sideloadly." \
+              --prerelease
+          fi
