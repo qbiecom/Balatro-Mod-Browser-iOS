@@ -5,6 +5,7 @@ nonisolated final class ModsFolderPresenter: NSObject, NSFilePresenter {
     let presentedItemOperationQueue = OperationQueue.main
     private let onChange: @MainActor () -> Void
 
+    /// Registers a directory URL and main-actor callback for external Files-app modifications.
     init(url: URL, onChange: @escaping @MainActor () -> Void) {
         presentedItemURL = url
         self.onChange = onChange

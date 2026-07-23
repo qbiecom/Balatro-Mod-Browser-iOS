@@ -372,6 +372,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    /// Renders one enabled or disabled installed-mod section using the selected fixed card density.
     private func modGrid(title: String, mods: [InstalledMod], isEnabled: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
@@ -402,6 +403,7 @@ struct ContentView: View {
         }
     }
 
+    /// Sorts by catalog display title while retaining a stable folder-name tie-breaker.
     private func displaySorted(_ mods: [InstalledMod]) -> [InstalledMod] {
         mods.sorted { lhs, rhs in
             let titleOrder = folderStore.presentation(for: lhs).title.localizedStandardCompare(
@@ -414,6 +416,7 @@ struct ContentView: View {
         }
     }
 
+    /// Counts catalog entries using normalization that tolerates BMI category punctuation and spacing.
     private func categoryCount(_ category: ModCategory) -> Int {
         folderStore.catalogItems.filter { mod in
             mod.categories?.contains {

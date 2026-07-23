@@ -33,6 +33,7 @@ private struct ColorPair {
     let first: String
     let second: String
 
+    /// Selects a stable, readable fallback pair when BMI provides no usable card colours.
     static func lightFallback(for key: String) -> ColorPair {
         let palette = [
             ColorPair(first: "#4F6367", second: "#425556"),
@@ -61,6 +62,7 @@ private struct ColorPair {
 }
 
 private extension Color {
+    /// Creates a SwiftUI colour from a six-digit RGB value, falling back to the app's neutral card tone.
     init(hex: String) {
         let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         guard Self.isValidHex(value), let number = UInt64(value, radix: 16) else {
@@ -74,6 +76,7 @@ private extension Color {
         )
     }
 
+    /// Accepts only six-digit RGB values to keep remote color data predictable.
     static func isValidHex(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         return trimmed.count == 6 && UInt64(trimmed, radix: 16) != nil

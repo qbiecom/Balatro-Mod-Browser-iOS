@@ -109,6 +109,7 @@ struct AllModsView: View {
         .searchable(text: $searchText, prompt: "Search mods")
     }
 
+    /// Filters by sidebar category and search query before applying the user-selected catalog ordering.
     private var sortedMods: [CatalogMod] {
         mods.filter { mod in
             guard let category else { return true }
@@ -144,15 +145,18 @@ struct AllModsView: View {
         }
     }
 
+    /// Compares localized display text in the active sort direction.
     private func compareText(_ lhs: String, _ rhs: String) -> Bool {
         let order = lhs.localizedStandardCompare(rhs)
         return sortAscending ? order == .orderedAscending : order == .orderedDescending
     }
 
+    /// Compares numeric catalog metadata in the active sort direction.
     private func compareNumber(_ lhs: Int64, _ rhs: Int64) -> Bool {
         sortAscending ? lhs < rhs : lhs > rhs
     }
 
+    /// Normalizes BMI category labels such as "Quality of Life" for reliable comparison.
     private func normalizedCategory(_ value: String) -> String {
         value.lowercased().filter { $0.isLetter }
     }

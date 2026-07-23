@@ -260,6 +260,7 @@ private struct ModDetailView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    /// Splits the plain-text BMI description into desktop-BMM-style overview, usage, and acknowledgement sections.
     private var detailSections: [DetailTextSection] {
         let lines = presentation.description
             .components(separatedBy: .newlines)
@@ -297,6 +298,7 @@ private struct DetailTextSection: Identifiable {
 private struct FlowLayout: Layout {
     let spacing: CGFloat
 
+    /// Measures a wrapping row layout without forcing category chips to truncate or resize.
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .greatestFiniteMagnitude
         var x: CGFloat = 0
@@ -318,6 +320,7 @@ private struct FlowLayout: Layout {
         return CGSize(width: min(width, maximumRowWidth), height: y + rowHeight)
     }
 
+    /// Places chip subviews left-to-right and wraps them when the next chip exceeds the available row width.
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var point = bounds.origin
         var rowHeight: CGFloat = 0
@@ -372,6 +375,7 @@ struct ModThumbnail: View {
     @StateObject private var loader: ThumbnailLoader
     @ObservedObject private var cache = ThumbnailCache.shared
 
+    /// Keeps one loader instance per thumbnail view so scrolling does not restart in-flight requests.
     init(url: URL?) {
         self.url = url
         _loader = StateObject(wrappedValue: ThumbnailLoader(url: url))
