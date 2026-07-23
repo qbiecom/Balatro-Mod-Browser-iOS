@@ -16,6 +16,7 @@ actor ThumbnailDiskCache {
     private let maximumEntryCount = 160
     private var generation: UInt = 0
 
+    /// Returns a disk-cached thumbnail only when it belongs to the active cache generation and remains fresh.
     func entry(for key: String, ifGeneration expectedGeneration: UInt) -> Entry? {
         guard adopt(expectedGeneration) else { return nil }
         enforceBudget()
@@ -35,6 +36,7 @@ actor ThumbnailDiskCache {
         return Entry(data: data)
     }
 
+    /// Stores thumbnail bytes and metadata, then evicts least-recently-used entries beyond the disk budget.
     func store(_ data: Data, for key: String, ifGeneration expectedGeneration: UInt) throws {
         guard data.count <= maximumEntryBytes, adopt(expectedGeneration) else { return }
         let fileURL = fileURL(for: key)
@@ -52,6 +54,7 @@ actor ThumbnailDiskCache {
         try? FileManager.default.removeItem(at: fileURL(for: key))
     }
 
+    /// Invalidates every thumbnail after a forced catalog refresh without blocking the UI.
     func invalidateAll(generation newGeneration: UInt) {
         guard newGeneration > generation else { return }
         generation = newGeneration
@@ -67,6 +70,7 @@ actor ThumbnailDiskCache {
         return true
     }
 
+    /// Evicts oldest entries until the cache fits its configured byte budget.
     private func enforceBudget() {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
@@ -121,6 +125,7 @@ final class ThumbnailCache: ObservableObject {
 
     func register(_ loader: ThumbnailLoader) { loaders.add(loader) }
 
+    /// Advances the shared generation so active loaders ignore stale disk and memory-cache entries.
     func invalidateAll() {
         generation &+= 1
         let newGeneration = generation

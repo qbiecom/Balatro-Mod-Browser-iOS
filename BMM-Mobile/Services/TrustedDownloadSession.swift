@@ -26,6 +26,7 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
+    /// Allows only HTTPS download URLs whose host is explicitly approved for BMI installations.
     static func isTrusted(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
@@ -36,6 +37,7 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         return true
     }
 
+    /// Rejects redirects that leave the approved-host allowlist before the URL session follows them.
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,

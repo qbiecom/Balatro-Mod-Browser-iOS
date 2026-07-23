@@ -24,6 +24,7 @@ actor ModFileService {
         let folderNames: Set<String>
     }
 
+    /// Enumerates non-symlink mod folders and reconciles their registry records with disk reality.
     func scan(
         modsFolderURL: URL,
         gameFolderID: String,
@@ -79,6 +80,7 @@ actor ModFileService {
         )
     }
 
+    /// Atomically creates or removes Lovely's `.lovelyignore` marker for one validated mod directory.
     func setEnabled(_ enabled: Bool, modURL: URL, modsFolderURL: URL, gameFolderID: String) throws {
         try Task.checkCancellation()
         let modsFolderIdentity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID)
@@ -111,6 +113,7 @@ actor ModFileService {
         }
     }
 
+    /// Transactionally removes a mod only after checking both stable and legacy dependency references.
     func delete(mod: InstalledMod, gameFolderID: String) throws {
         try Task.checkCancellation()
         let modsFolderURL = mod.id.deletingLastPathComponent()
@@ -167,10 +170,12 @@ actor ModFileService {
         }
     }
 
+    /// Retrieves the persisted installation records that still correspond to the supplied folders.
     func updateRecords(for mods: [InstalledMod], gameFolderID: String) throws -> [InstalledModRecord] {
         try mods.compactMap { try registry.record(gameFolderID: gameFolderID, modPath: $0.id.standardizedFileURL.path.lowercased()) }
     }
 
+    /// Provides filesystem timestamps for untracked-install update detection.
     func modificationDates(for mods: [InstalledMod]) -> [String: Date] {
         Dictionary(uniqueKeysWithValues: mods.compactMap { mod in
             guard let date = try? mod.id.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
@@ -180,6 +185,7 @@ actor ModFileService {
         })
     }
 
+    /// Completes committed replacements or rolls back incomplete updates left by an interrupted operation.
     func recoverInterruptedUpdates(
         modsFolderURL: URL,
         gameFolderID: String,
@@ -234,6 +240,7 @@ actor ModFileService {
         }
     }
 
+    /// Streams, validates, extracts, and transactionally installs an archive into the selected Mods directory.
     func downloadAndInstall(
         from downloadURL: URL,
         mod: CatalogMod,

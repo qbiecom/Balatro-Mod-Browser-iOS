@@ -104,6 +104,7 @@ final class ModFolderStore: ObservableObject {
     }
     var isInstallerAvailable: Bool { installerAvailability == .available }
 
+    /// Starts cache loading immediately, then attempts to restore the last security-scoped game folder.
     init() {
         _ = cacheLoadTask
         restoreFolderAccess()
@@ -122,6 +123,7 @@ final class ModFolderStore: ObservableObject {
         activeGameFolderURL?.stopAccessingSecurityScopedResource()
     }
 
+    /// Validates and begins activating a game folder returned by the system document picker.
     func handleFolderSelection(_ result: Result<[URL], Error>) {
         guard !isFolderOperationBusy, folderTransitionTask == nil else {
             showError("Wait for the current install or update to finish before changing the game folder.")
@@ -145,6 +147,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Toggles Lovely's per-folder ignore marker through the serialized file service.
     func setEnabled(_ enabled: Bool, for mod: InstalledMod) {
         guard let modsFolderURL, let gameFolderID else { return }
         guard reserveFolderOperation() else { return }
@@ -160,6 +163,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Deletes an installed mod after the file service confirms no other managed mod depends on it.
     func delete(_ mod: InstalledMod) {
         guard let gameFolderID else { return }
         guard reserveFolderOperation() else { return }
@@ -175,6 +179,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Combines local folder state with any matching BMI record for installed-mod UI.
     func presentation(for mod: InstalledMod) -> ModPresentation {
         let catalogMod = catalogMod(forInstalledMod: mod)
         let summary = catalogMod?.cleanedSummary
@@ -208,6 +213,7 @@ final class ModFolderStore: ObservableObject {
         startCatalogRefresh(forceDownloads: true)
     }
 
+    /// Invalidates catalog, detail, download, and thumbnail caches before fetching a clean BMI snapshot.
     func clearCatalogCache() {
         catalogGeneration += 1
         cacheRevision += 1
@@ -258,6 +264,7 @@ final class ModFolderStore: ObservableObject {
         catalogMods[id.lowercased()]
     }
 
+    /// Loads a full BMI record lazily, coalescing concurrent requests and retaining it for the detail-cache TTL.
     func loadDetail(for catalogMod: CatalogMod) async {
         let key = catalogMod.id.lowercased()
         if let cached = detailCache[key],
@@ -289,6 +296,7 @@ final class ModFolderStore: ObservableObject {
         installedMod(for: mod) != nil
     }
 
+    /// Finds a local installation using registry IDs first, then resilient catalog and folder-name matching.
     func installedMod(for targetMod: CatalogMod) -> InstalledMod? {
         let candidates = enabledMods + disabledMods
         if let registryMatch = candidates.first(where: { mod in
@@ -313,6 +321,7 @@ final class ModFolderStore: ObservableObject {
         installingModIDs.contains(mod.id)
     }
 
+    /// Begins installation after rejecting duplicate installs and concurrent file mutations.
     func install(_ mod: CatalogMod) {
         guard isInstallerAvailable else {
             showError(installerAvailability.message)
@@ -330,6 +339,7 @@ final class ModFolderStore: ObservableObject {
         beginInstall(mod, replacing: false)
     }
 
+    /// Continues a deferred install after the user confirms its dependency plan or Talisman provider.
     func confirmDependencyInstall(talismanProvider: CatalogMod? = nil) {
         guard let request = dependencyInstallRequest else { return }
         dependencyInstallRequest = nil
@@ -357,6 +367,7 @@ final class ModFolderStore: ObservableObject {
         releaseFolderOperation()
     }
 
+    /// Restores the persisted security-scoped bookmark, requesting a re-link if it is no longer usable.
     private func restoreFolderAccess() {
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
         let storedIdentity = UserDefaults.standard.string(forKey: folderIdentityKey)
@@ -392,6 +403,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Clears an unusable bookmark while preserving its registry identity for a later folder re-link.
     private func markGameFolderForRelink(previousIdentity: String?) {
         if let previousIdentity, !previousIdentity.isEmpty {
             UserDefaults.standard.set(previousIdentity, forKey: pendingRelinkIdentityKey)
@@ -425,6 +437,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Replaces the active folder safely, then reconnects observation, recovery, scanning, and catalog refresh.
     private func activateGameFolder(at url: URL, bookmark: Data?, identity: String) async {
         let resourceIdentifier = fileResourceIdentifier(for: url)
         if activeGameFolderURL?.standardizedFileURL == url.standardizedFileURL,
@@ -454,6 +467,7 @@ final class ModFolderStore: ObservableObject {
         refreshCatalogIfNeeded()
     }
 
+    /// Ensures the user selected Lovely Mobile Maker's `game` directory, not a parent or Mods itself.
     private func gameFolderValidation(at url: URL) throws {
         let resourceValues = try url.resourceValues(forKeys: [.isDirectoryKey])
         guard resourceValues.isDirectory == true else {
@@ -480,6 +494,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Re-scans the Mods directory and rebuilds UI state and registry-to-catalog associations.
     private func refreshMods() {
         guard isApplicationActive, let modsFolderURL, let gameFolderID else { return }
         let generation = gameFolderGeneration
@@ -533,6 +548,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Watches the external Mods directory and debounces a refresh after Files-app changes.
     private func observeModsFolder() {
         guard let modsFolderURL else { return }
         if let modsFolderPresenter { NSFileCoordinator.removeFilePresenter(modsFolderPresenter) }
@@ -567,6 +583,7 @@ final class ModFolderStore: ObservableObject {
         updateAvailableNames.contains(mod.name.lowercased())
     }
 
+    /// Reinstalls a newer catalog release into the existing folder while preserving its enabled state.
     func update(_ localMod: InstalledMod) {
         guard let gameFolderID, isUpdateAvailable(for: localMod) else { return }
         guard reserveFolderOperation() else { return }
@@ -593,6 +610,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Computes update badges from tracked versions, with a timestamp fallback for recovered local folders.
     private func refreshAvailableUpdates() {
         guard let gameFolderID else { return }
         let mods = enabledMods + disabledMods
@@ -672,6 +690,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Synchronizes the BMI catalog incrementally and discards results from a superseded refresh generation.
     private func fetchCatalog(forceDownloads: Bool = false, generation: Int, managesLoadingState: Bool = true) async {
         await cacheLoadTask.value
         guard !Task.isCancelled, generation == catalogGeneration else { return }
@@ -723,6 +742,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Refreshes download counters separately from the catalog and prunes only a plausibly complete response.
     private func refreshDownloadsIfNeeded(force: Bool, generation: Int) async {
         guard force || downloadsRefreshedAt.map({ Date().timeIntervalSince($0) > downloadsCacheLifetime }) ?? true else { return }
         do {
@@ -744,6 +764,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Follows BMI cursor pagination and returns the full result set for an endpoint.
     private func fetchCatalogPages(path: String, query: [URLQueryItem]) async throws -> [CatalogMod] {
         var cursor: String?
         var results: [CatalogMod] = []
@@ -810,6 +831,7 @@ final class ModFolderStore: ObservableObject {
         rebuildCatalogAliases()
     }
 
+    /// Removes cache entries absent from a sufficiently complete full-catalog response.
     private func pruneRemovedCatalogMods(using freshMods: [CatalogMod]) -> Int {
         let incomingIDs = Set(freshMods.map { $0.id.lowercased() })
         let existingCount = catalogMods.count
@@ -846,6 +868,7 @@ final class ModFolderStore: ObservableObject {
         return resolved
     }
 
+    /// Resolves an on-disk folder name through BMI's stable ID, display-name, and folder-name aliases.
     private func catalogMod(matchingLocalName name: String) -> CatalogMod? {
         let key = name.lowercased()
         // BMI commonly uses publisher@mod as its stable ID and as the installed folder name.
@@ -885,6 +908,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Builds the dependency plan before handing a serialized install or replacement to the file service.
     private func beginInstall(_ mod: CatalogMod, replacing: Bool, replacementModURL: URL? = nil) {
         guard reserveFolderOperation() else { return }
         if let talismanOptions = uninstalledTalismanProviderOptions(for: mod) {
@@ -958,6 +982,7 @@ final class ModFolderStore: ObservableObject {
         let directDependencies: [String: [String]]
     }
 
+    /// Topologically resolves required loaders, detecting cycles and deferring the Talisman-versus-Amulet choice.
     private func resolveDependencyGraph(for root: CatalogMod, talismanProvider: CatalogMod? = nil) -> DependencyGraph? {
         var visiting = Set<String>()
         var visited = Set<String>()
@@ -1037,6 +1062,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Resolves the authoritative download URL, installs transactionally, then refreshes local state.
     private func downloadAndInstall(
         _ mod: CatalogMod,
         replacing: Bool = false,
@@ -1066,6 +1092,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Requests BMI's tracked download URL, except for Steamodded which is sourced from its GitHub release.
     private func resolveDownloadURL(for mod: CatalogMod) async throws -> URL {
         if mod.name?.normalizedDependencyName == "steamodded" || mod.id.normalizedDependencyName == "steamodded" {
             return try await latestSteamoddedReleaseURL()
@@ -1161,6 +1188,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Cancels folder-bound work and relinquishes the previous security-scoped resource before a switch.
     private func stopAccessingCurrentFolder() async {
         gameFolderGeneration += 1
         let tasks = [refreshTask, scanTask, recoveryTask, updatesTask].compactMap { $0 }

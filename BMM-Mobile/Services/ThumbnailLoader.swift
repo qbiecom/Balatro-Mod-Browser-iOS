@@ -37,6 +37,7 @@ final class ThumbnailLoader: ObservableObject {
     }
     deinit { loadTask?.cancel() }
 
+    /// Cancels the current request and resets state when SwiftUI reuses the loader for a different thumbnail.
     func replace(url: URL?) {
         guard self.url != url else { return }
         cancel()
@@ -45,11 +46,13 @@ final class ThumbnailLoader: ObservableObject {
         imagePixelBucket = nil
     }
 
+    /// Chooses an appropriate pixel bucket for the visible size before fetching and downsampling.
     func load(displaySize: CGSize) async {
         let pixelBucket = Self.pixelBucket(for: displaySize)
         await load(pixelBucket: pixelBucket)
     }
 
+    /// Starts a de-duplicated thumbnail request for the requested pixel bucket.
     func load(pixelBucket: Int) async {
         guard let url, TrustedDownloadSession.isTrusted(url) else { return }
         if let imagePixelBucket, imagePixelBucket >= pixelBucket { return }
@@ -93,6 +96,7 @@ final class ThumbnailLoader: ObservableObject {
         loadingPixelBucket = nil
     }
 
+    /// Invalidates every thumbnail cache generation and returns this loader to its initial state.
     func invalidateCache() {
         cancel()
         image = nil
@@ -131,6 +135,7 @@ final class ThumbnailLoader: ObservableObject {
         } catch { return nil }
     }
 
+    /// Decodes source data at the display-sized pixel limit to avoid retaining full-resolution artwork.
     private static func downsample(data: Data, pixelBucket: Int) -> UIImage? {
         let source = CGImageSourceCreateWithData(data as CFData, nil)
         guard let source else { return nil }

@@ -19,11 +19,13 @@ actor CatalogFileCache {
             .appendingPathComponent("bmi-catalog-cache.json")
     }
 
+    /// Decodes the last persisted catalog snapshot, if the cache file exists.
     func load() throws -> Snapshot? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: fileURL))
     }
 
+    /// Persists a snapshot only when its caller's revision is still current.
     func save(_ snapshot: Snapshot, revision: Int) throws {
         guard revision >= latestRevision else { return }
         latestRevision = revision
@@ -31,6 +33,7 @@ actor CatalogFileCache {
         try JSONEncoder().encode(snapshot).write(to: fileURL, options: .atomic)
     }
 
+    /// Removes the on-disk snapshot as part of an explicitly invalidated cache generation.
     func remove(revision: Int) throws {
         guard revision >= latestRevision else { return }
         latestRevision = revision

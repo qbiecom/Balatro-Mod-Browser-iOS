@@ -13,6 +13,7 @@ nonisolated final class InstalledModRegistry {
             .appendingPathComponent("installed-mods.json")
     }
 
+    /// Upserts the metadata for one installed folder while retaining one canonical record per path.
     func add(_ record: InstalledModRecord) throws {
         var records = try load()
         records.removeAll {
@@ -29,6 +30,7 @@ nonisolated final class InstalledModRegistry {
         })
     }
 
+    /// Marks records absent from disk as orphaned without discarding their dependency information.
     func reconcile(gameFolderID: String, existingPaths: Set<String>) throws {
         let records = try load()
         let reconciled = records.map { record in
@@ -54,6 +56,7 @@ nonisolated final class InstalledModRegistry {
     }
 
     /// Moves records for paths that still exist from transient folder IDs to a durable folder ID.
+    /// Moves surviving records from prior folder identities to the current durable identity.
     func migrateRecords(
         from legacyGameFolderIDs: Set<String>,
         to gameFolderID: String,
@@ -79,6 +82,7 @@ nonisolated final class InstalledModRegistry {
         }
     }
 
+    /// Finds legacy name-based dependency references for a managed removal check.
     func dependents(of dependency: String, in gameFolderID: String) throws -> [InstalledModRecord] {
         let normalizedDependency = dependency.normalizedDependencyName
         return (try load()).filter { record in
@@ -91,6 +95,7 @@ nonisolated final class InstalledModRegistry {
         }
     }
 
+    /// Finds dependency references using catalog ID and/or normalized path, avoiding ambiguous display names.
     func dependents(
         of dependency: InstalledModDependencyReference,
         in gameFolderID: String
@@ -132,6 +137,7 @@ nonisolated final class InstalledModRegistry {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Collapses duplicate records deterministically so registry reads are independent of write order.
     private func canonicalized(_ records: [InstalledModRecord]) -> [InstalledModRecord] {
         let groups = Dictionary(grouping: records) {
             "\($0.gameFolderID)\u{0}\($0.normalizedModPath)"

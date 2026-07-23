@@ -3,6 +3,7 @@ import Foundation
 struct FlexibleTimestamp: Codable {
     let value: Int64
 
+    /// Accepts BMI timestamps encoded as either numeric JSON values or decimal strings.
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let decoded: Int64
@@ -96,6 +97,7 @@ struct CatalogMod: Codable, Identifiable {
         return URL(string: "https://api-bmi.dasguney.com/")?.appendingPathComponent(path)
     }
 
+    /// Preserves summary-list fields while overlaying any richer values returned by BMI's detail endpoint.
     func merged(with detail: CatalogMod) -> CatalogMod {
         CatalogMod(
             id: id, name: detail.name ?? name, author: detail.author ?? author,
@@ -298,6 +300,7 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         catalogID = try values.decodeIfPresent(String.self, forKey: .catalogID)
     }
 
+    /// Rebinds a record to a newly restored security-scoped folder identity without changing installation data.
     func replacingGameFolderID(with gameFolderID: String) -> InstalledModRecord {
         InstalledModRecord(
             gameFolderID: gameFolderID,
