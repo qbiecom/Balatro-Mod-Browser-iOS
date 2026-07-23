@@ -171,6 +171,15 @@ actor ModFileService {
         try mods.compactMap { try registry.record(gameFolderID: gameFolderID, modPath: $0.id.standardizedFileURL.path.lowercased()) }
     }
 
+    func modificationDates(for mods: [InstalledMod]) -> [String: Date] {
+        Dictionary(uniqueKeysWithValues: mods.compactMap { mod in
+            guard let date = try? mod.id.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+                return nil
+            }
+            return (mod.id.standardizedFileURL.path.lowercased(), date)
+        })
+    }
+
     func recoverInterruptedUpdates(
         modsFolderURL: URL,
         gameFolderID: String,

@@ -571,9 +571,10 @@ final class ModFolderStore: ObservableObject {
         guard let gameFolderID, isUpdateAvailable(for: localMod) else { return }
         guard reserveFolderOperation() else { return }
         startInstallTask {
-            guard let record = try? await self.fileService.updateRecords(for: [localMod], gameFolderID: gameFolderID).first,
-                  let catalogID = record.catalogID,
-                  let catalogMod = self.catalogMods[catalogID.lowercased()] else { return }
+            let record = try? await self.fileService.updateRecords(for: [localMod], gameFolderID: gameFolderID).first
+            let catalogMod = record?.catalogID.flatMap { self.catalogMods[$0.lowercased()] }
+                ?? self.catalogMod(forInstalledMod: localMod)
+            guard let catalogMod else { return }
             if let providers = self.uninstalledTalismanProviderOptions(for: catalogMod) {
                 // DependencyInstallRequest is the temporary integration seam for the dependency-model owner.
                 self.dependencyInstallRequest = DependencyInstallRequest(mod: catalogMod, dependencies: [], directDependencies: [:], talismanProviderOptions: providers, replacing: true, replacementModURL: localMod.id)
@@ -603,11 +604,38 @@ final class ModFolderStore: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             do {
                 let records = try await fileService.updateRecords(for: mods, gameFolderID: gameFolderID)
+                let modificationDates = await fileService.modificationDates(for: mods)
                 guard !Task.isCancelled, generation == gameFolderGeneration else { return }
-                updateAvailableNames = Set(records.compactMap { record in
-                    guard let catalogID = record.catalogID, let catalogMod = self.catalogMods[catalogID.lowercased()], let current = record.currentVersion, let available = catalogMod.version, current != available else { return nil }
+                let recordsByPath = Dictionary(uniqueKeysWithValues: records.map {
+                    ($0.normalizedModPath, $0)
+                })
+                var updateNames = Set<String>(records.compactMap { (record: InstalledModRecord) -> String? in
+                    guard let catalogID = record.catalogID,
+                          let catalogMod = self.catalogMods[catalogID.lowercased()],
+                          let current = record.currentVersion,
+                          let available = catalogMod.version,
+                          current != available else { return nil }
                     return record.name.lowercased()
                 })
+                updateNames.formUnion(mods.compactMap { mod in
+                    let path = mod.id.standardizedFileURL.path.lowercased()
+                    let hasTrackedVersion = recordsByPath[path].flatMap { record in
+                        guard let catalogID = record.catalogID,
+                              let catalogMod = self.catalogMods[catalogID.lowercased()] else {
+                            return nil
+                        }
+                        return record.currentVersion != nil && catalogMod.version != nil
+                    } ?? false
+                    guard !hasTrackedVersion,
+                          let catalogMod = self.catalogMod(forInstalledMod: mod),
+                          let updatedAt = catalogMod.updatedAt,
+                          let modificationDate = modificationDates[path],
+                          modificationDate.timeIntervalSince1970 < TimeInterval(updatedAt.value) else {
+                        return nil
+                    }
+                    return mod.name.lowercased()
+                })
+                updateAvailableNames = updateNames
             } catch is CancellationError { return
             } catch {
                 guard generation == gameFolderGeneration else { return }
