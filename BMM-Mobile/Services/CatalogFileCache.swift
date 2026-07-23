@@ -13,6 +13,7 @@ actor CatalogFileCache {
     private let fileURL: URL
     private var latestRevision = 0
 
+    /// Locates the catalog snapshot in the app's durable Application Support directory.
     init(fileManager: FileManager = .default) {
         fileURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BMM Mobile", isDirectory: true)

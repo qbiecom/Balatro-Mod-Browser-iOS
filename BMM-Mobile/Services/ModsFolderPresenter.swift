@@ -11,6 +11,8 @@ nonisolated final class ModsFolderPresenter: NSObject, NSFilePresenter {
         self.onChange = onChange
     }
 
+    /// Relays child changes, such as an external mod install, to the store on the main actor.
     func presentedSubitemDidChange(at url: URL) { Task { @MainActor in onChange() } }
+    /// Relays replacement or metadata changes to the store on the main actor.
     func presentedItemDidChange() { Task { @MainActor in onChange() } }
 }

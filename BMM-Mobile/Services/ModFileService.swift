@@ -14,6 +14,7 @@ actor ModFileService {
     private let recoveryStore = UpdateRecoveryStore()
     private let deletionRecoveryStore = DeletionRecoveryStore()
 
+    /// Injects the redirect-validating session used by every archive download.
     init(downloadSession: TrustedDownloadSession = TrustedDownloadSession()) {
         self.downloadSession = downloadSession
     }
@@ -231,6 +232,7 @@ actor ModFileService {
     }
 
     // Retains source compatibility while old callers migrate to supplying their active Mods URL.
+    /// Legacy recovery entry point that discovers the relevant Mods paths from persisted transactions.
     func recoverInterruptedUpdates(gameFolderID: String) {
         let paths = Set(recoveryStore.load().filter { $0.gameFolderID == gameFolderID }.map(\.modsFolderPath))
             .union(deletionRecoveryStore.load().filter { $0.gameFolderID == gameFolderID }.map(\.modsFolderPath))
@@ -337,6 +339,7 @@ actor ModFileService {
         }
     }
 
+    /// Streams an allowlisted archive into a temporary file while enforcing the compressed-size limit.
     private func downloadArchive(from url: URL) async throws -> URL {
         guard TrustedDownloadSession.isTrusted(url) else { throw ModInstallError.untrustedDownloadURL }
         let (bytes, response) = try await downloadSession.session.bytes(from: url)
@@ -371,7 +374,9 @@ actor ModFileService {
         }
     }
 
+    /// Identifies ZIP archives from magic bytes rather than trusting remote filenames or headers.
     private func isZIPArchive(at url: URL) throws -> Bool { let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; let magic = try handle.read(upToCount: 4) ?? Data(); return magic.starts(with: [0x50, 0x4B, 0x03, 0x04]) || magic.starts(with: [0x50, 0x4B, 0x05, 0x06]) || magic.starts(with: [0x50, 0x4B, 0x07, 0x08]) }
+    /// Extracts a ZIP under file-count, size, and path-traversal limits, rechecking the mutation root per entry.
     private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL, mutationCheck: () throws -> Void) throws {
         let archive = try Archive(url: archiveURL, accessMode: .read)
         var count = 0; var size: UInt64 = 0
@@ -396,19 +401,26 @@ actor ModFileService {
             switch entry.type { case .directory: try fileManager.createDirectory(at: output, withIntermediateDirectories: true); case .file: try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true); _ = try archive.extract(entry, to: output, bufferSize: 64 * 1024); case .symlink: throw ModInstallError.unsafeArchive; @unknown default: throw ModInstallError.unsafeArchive }
         }
     }
+    /// Converts an archive entry into a safe descendant URL, rejecting zip-slip and platform-ambiguous paths.
     private func safeArchiveOutputURL(for path: String, in destination: URL) throws -> URL { let components = path.replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/", omittingEmptySubsequences: true); guard !components.isEmpty else { return destination }; guard components.count <= Self.maximumArchivePathDepth, components.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains(":") }) else { throw ModInstallError.unsafeArchive }; return components.reduce(destination) { $0.appendingPathComponent(String($1), isDirectory: false) } }
+    /// Validates the BMI-provided folder name as one safe, non-reserved immediate child of Mods.
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String { let name = (mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? mod.folderName! : mod.id).trimmingCharacters(in: .whitespacesAndNewlines); let reserved: Set<String> = [".", "..", "mods", "disabled mods", ".bmm backups", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]; let device = name.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""; guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"), name.rangeOfCharacter(from: .controlCharacters) == nil, !reserved.contains(name.lowercased()), !reserved.contains(device) else { throw ModInstallError.unsafeFolderName }; return name }
+    /// Builds and verifies an immediate child URL so catalog data cannot escape the intended root.
     private func containedChildURL(named name: String, in rootURL: URL) throws -> URL { let root = rootURL.standardizedFileURL; let child = root.appendingPathComponent(name, isDirectory: true).standardizedFileURL; guard child.deletingLastPathComponent().path == root.path, child.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else { throw ModInstallError.unsafeFolderName }; return child }
+    /// Ensures an update or delete target is a real direct child of the active Mods directory.
     private func validatedImmediateModChild(_ url: URL, in modsFolderURL: URL) throws -> URL { let destination = url.standardizedFileURL; let values = try? destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]); guard destination.deletingLastPathComponent() == modsFolderURL.standardizedFileURL, destination.resolvingSymlinksInPath().deletingLastPathComponent() == modsFolderURL.resolvingSymlinksInPath(), values?.isDirectory == true, values?.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }; return destination }
+    /// Verifies that the folder still belongs to the selected game identity before a mutation starts.
     private func verifiedModsFolderIdentity(modsFolderURL: URL, expectedGameFolderID: String) throws -> String {
         guard !expectedGameFolderID.isEmpty else { throw ModInstallError.invalidUpdateTarget }
         let values = try modsFolderURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileResourceIdentifierKey])
         guard values.isDirectory == true, values.isSymbolicLink != true, let identifier = values.fileResourceIdentifier else { throw ModInstallError.invalidUpdateTarget }
         return String(describing: identifier)
     }
+    /// Rechecks the external folder identity between destructive transaction phases.
     private func revalidateMutationRoot(_ modsFolderURL: URL, identity: String, gameFolderID: String) throws {
         guard try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID) == identity else { throw ModInstallError.invalidUpdateTarget }
     }
+    /// Confirms recovery transaction paths remain contained in Mods and its internal backup directory.
     private func validateTransactionPaths(destinationURL: URL, backupURL: URL, modsFolderURL: URL) throws {
         let root = modsFolderURL.standardizedFileURL
         let backups = try containedChildURL(named: ".BMM Backups", in: root)
@@ -425,6 +437,7 @@ actor ModFileService {
             guard values.isDirectory == true, values.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }
         }
     }
+    /// Replays or restores persisted deletion transactions after an interruption.
     private func recoverInterruptedDeletions(
         modsFolderURL: URL,
         gameFolderID: String,
@@ -464,6 +477,7 @@ actor ModFileService {
             catch { continue }
         }
     }
+    /// Restores the original mod directory and registry record when a replacement cannot commit.
     private func rollbackUpdate(_ transaction: inout UpdateTransaction, destinationURL: URL) throws {
         let backupURL = URL(fileURLWithPath: transaction.backupPath)
         if !transaction.phase.isRollback {
@@ -493,6 +507,7 @@ actor ModFileService {
         try recoveryStore.remove(transaction)
     }
 
+    /// Moves a temporarily deleted directory back into place and restores its registry entry.
     private func rollbackDeletion(_ transaction: inout DeletionTransaction, modURL: URL, temporaryURL: URL) throws {
         if !transaction.phase.isRollback {
             transaction.phase = .rollingBack
@@ -557,6 +572,7 @@ nonisolated private struct UpdateTransaction: Codable, Identifiable {
         case replacementRecord, originalRecord, phase
     }
 
+    /// Creates an update journal before the original folder is moved aside.
     init(gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, destinationPath: String, backupPath: String, replacementRecord: InstalledModRecord, originalRecord: InstalledModRecord, phase: UpdateTransactionPhase) {
         id = UUID()
         self.gameFolderID = gameFolderID
@@ -569,6 +585,7 @@ nonisolated private struct UpdateTransaction: Codable, Identifiable {
         self.phase = phase
     }
 
+    /// Decodes an update journal, retaining backwards compatibility with older phase records.
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
@@ -584,6 +601,7 @@ nonisolated private struct UpdateTransaction: Codable, Identifiable {
         phase = try values.decodeIfPresent(UpdateTransactionPhase.self, forKey: .phase) ?? .originalMoved
     }
 
+    /// Rewrites only the folder identity when migrating an unfinished update to a re-linked folder.
     func replacingGameFolderID(with gameFolderID: String) -> UpdateTransaction {
         UpdateTransaction(
             id: id,
@@ -598,6 +616,7 @@ nonisolated private struct UpdateTransaction: Codable, Identifiable {
         )
     }
 
+    /// Internal clone initializer used when migrating a journal to a re-linked folder identity.
     private init(id: UUID, gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, destinationPath: String, backupPath: String, replacementRecord: InstalledModRecord, originalRecord: InstalledModRecord, phase: UpdateTransactionPhase) {
         self.id = id
         self.gameFolderID = gameFolderID
@@ -615,6 +634,7 @@ nonisolated private final class UpdateRecoveryStore {
     private let directoryURL: URL
     private let fileManager: FileManager
 
+    /// Stores update journals beneath Application Support rather than the externally selected game folder.
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -622,6 +642,7 @@ nonisolated private final class UpdateRecoveryStore {
             .appendingPathComponent("update-transactions", isDirectory: true)
     }
 
+    /// Decodes every persisted update transaction, ignoring corrupt or stale individual files.
     func load() -> [UpdateTransaction] {
         guard let urls = try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
         return urls.compactMap { url in
@@ -630,17 +651,20 @@ nonisolated private final class UpdateRecoveryStore {
         }
     }
 
+    /// Atomically persists an update phase so recovery can resume after termination.
     func save(_ transaction: UpdateTransaction) throws {
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try JSONEncoder().encode(transaction).write(to: fileURL(for: transaction), options: .atomic)
     }
 
+    /// Removes a completed update transaction journal.
     func remove(_ transaction: UpdateTransaction) throws {
         let url = fileURL(for: transaction)
         guard fileManager.fileExists(atPath: url.path) else { return }
         try fileManager.removeItem(at: url)
     }
 
+    /// Maps each update journal UUID to its durable JSON filename.
     private func fileURL(for transaction: UpdateTransaction) -> URL { directoryURL.appendingPathComponent("\(transaction.id.uuidString).json") }
 }
 
@@ -667,6 +691,7 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
         case id, gameFolderID, modsFolderPath, modsFolderIdentity, modPath, temporaryPath, record, phase
     }
 
+    /// Creates a deletion journal before a mod directory moves into its temporary holding location.
     init(gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, modPath: String, temporaryPath: String, record: InstalledModRecord?, phase: DeletionTransactionPhase) {
         id = UUID()
         self.gameFolderID = gameFolderID
@@ -678,6 +703,7 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
         self.phase = phase
     }
 
+    /// Decodes a deletion journal so recovery can distinguish a reversible move from a committed removal.
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
@@ -693,6 +719,7 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
         phase = try values.decodeIfPresent(DeletionTransactionPhase.self, forKey: .phase) ?? .moved
     }
 
+    /// Rewrites only the folder identity when migrating an unfinished deletion to a re-linked folder.
     func replacingGameFolderID(with gameFolderID: String) -> DeletionTransaction {
         DeletionTransaction(
             id: id,
@@ -706,6 +733,7 @@ nonisolated private struct DeletionTransaction: Codable, Identifiable {
         )
     }
 
+    /// Internal clone initializer used when migrating a deletion journal to a re-linked folder identity.
     private init(id: UUID, gameFolderID: String, modsFolderPath: String, modsFolderIdentity: String, modPath: String, temporaryPath: String, record: InstalledModRecord?, phase: DeletionTransactionPhase) {
         self.id = id
         self.gameFolderID = gameFolderID
@@ -722,6 +750,7 @@ nonisolated private final class DeletionRecoveryStore {
     private let directoryURL: URL
     private let fileManager: FileManager
 
+    /// Stores deletion journals beneath Application Support rather than the externally selected game folder.
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -729,6 +758,7 @@ nonisolated private final class DeletionRecoveryStore {
             .appendingPathComponent("deletion-transactions", isDirectory: true)
     }
 
+    /// Decodes every persisted deletion transaction, ignoring corrupt or stale individual files.
     func load() -> [DeletionTransaction] {
         guard let urls = try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
         return urls.compactMap { url in
@@ -737,16 +767,19 @@ nonisolated private final class DeletionRecoveryStore {
         }
     }
 
+    /// Atomically persists a deletion phase so recovery can restore an interrupted operation.
     func save(_ transaction: DeletionTransaction) throws {
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try JSONEncoder().encode(transaction).write(to: fileURL(for: transaction), options: .atomic)
     }
 
+    /// Removes a completed deletion transaction journal.
     func remove(_ transaction: DeletionTransaction) throws {
         let url = fileURL(for: transaction)
         guard fileManager.fileExists(atPath: url.path) else { return }
         try fileManager.removeItem(at: url)
     }
 
+    /// Maps each deletion journal UUID to its durable JSON filename.
     private func fileURL(for transaction: DeletionTransaction) -> URL { directoryURL.appendingPathComponent("\(transaction.id.uuidString).json") }
 }

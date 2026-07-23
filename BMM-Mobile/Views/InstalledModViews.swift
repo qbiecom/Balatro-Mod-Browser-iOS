@@ -270,6 +270,7 @@ private struct ModDetailView: View {
         var title = "Overview"
         var content: [String] = []
 
+        /// Commits the accumulated lines when a recognized desktop-BMM section heading is encountered.
         func appendSection() {
             guard !content.isEmpty else { return }
             sections.append(DetailTextSection(title: title, body: content.joined(separator: "\n")))
@@ -426,6 +427,7 @@ struct ModThumbnail: View {
         let cacheGeneration: UInt
         let pixelBucket: Int
 
+        /// Captures every input that should restart a thumbnail task when SwiftUI state changes.
         init(url: URL?, cacheGeneration: UInt, pixelBucket: Int) {
             self.url = url
             self.cacheGeneration = cacheGeneration

@@ -28,6 +28,7 @@ struct FlexibleTimestamp: Codable {
         value = decoded
     }
 
+    /// Writes timestamps in BMI's canonical numeric representation.
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(value)
@@ -114,6 +115,7 @@ struct CatalogMod: Codable, Identifiable {
         )
     }
 
+    /// Converts BMI's lightweight HTML descriptions into the text rendered by native SwiftUI detail views.
     nonisolated private static func plainText(fromHTML html: String) -> String {
         html
             .replacingOccurrences(of: "<h1>", with: "\n")
@@ -132,6 +134,7 @@ struct CatalogMod: Codable, Identifiable {
             .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
     }
 
+    /// Removes a duplicated leading title so list cards do not repeat the mod name as their excerpt.
     nonisolated private static func removingLeadingTitle(from value: String?, matching title: String) -> String? {
         guard let value else { return nil }
         var lines = value.components(separatedBy: .newlines)
@@ -152,6 +155,7 @@ struct ModColors: Codable {
     let first: String
     let second: String
 
+    /// Decodes download counters from the compact BMI payload, defaulting omitted values safely.
     init(from decoder: Decoder) throws {
         if var values = try? decoder.singleValueContainer().decode([String].self), values.count >= 2 {
             first = values.removeFirst()
@@ -171,6 +175,7 @@ struct ModColors: Codable {
         case color1, color2, first, second
     }
 
+    /// Encodes download counters using BMI's snake-case field names.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(first, forKey: .color1)
@@ -225,11 +230,13 @@ nonisolated struct InstalledModDependencyReference: Codable, Equatable, Hashable
     let catalogID: String?
     let normalizedInstalledPath: String?
 
+    /// Creates a dependency reference that can survive display-name changes and folder migration.
     init(catalogID: String?, normalizedInstalledPath: String?) {
         self.catalogID = catalogID
         self.normalizedInstalledPath = normalizedInstalledPath
     }
 
+    /// Accepts older registry entries that predate stable dependency-path references.
     init(from decoder: Decoder) throws {
         if let legacyValue = try? decoder.singleValueContainer().decode(String.self) {
             catalogID = legacyValue
@@ -261,6 +268,7 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         case currentVersion, orphaned, catalogID
     }
 
+    /// Creates a registry record while deriving stable dependency references for legacy callers.
     init(
         gameFolderID: String,
         name: String,
@@ -284,6 +292,7 @@ nonisolated struct InstalledModRecord: Codable, Identifiable, Equatable {
         self.catalogID = catalogID
     }
 
+    /// Decodes current and legacy registry formats, supplying durable defaults for missing fields.
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         name = try values.decode(String.self, forKey: .name)

@@ -31,6 +31,7 @@ final class ThumbnailLoader: ObservableObject {
     private var loadingPixelBucket: Int?
     private var imagePixelBucket: Int?
 
+    /// Initializes a reusable observable loader and enrolls it in global thumbnail invalidation.
     init(url: URL?) {
         self.url = url
         ThumbnailCache.shared.register(self)
@@ -88,6 +89,7 @@ final class ThumbnailLoader: ObservableObject {
         loadTask = nil
     }
 
+    /// Cancels an in-flight request when its tile disappears or changes identity.
     func cancel() {
         requestToken &+= 1
         loadTask?.cancel()
@@ -103,20 +105,24 @@ final class ThumbnailLoader: ObservableObject {
         imagePixelBucket = nil
     }
 
+    /// Drops decoded images while leaving the longer-lived disk cache intact.
     static func clearMemoryCache() { memoryCache.removeAllObjects() }
 
+    /// Clears a previous request failure and retries using the current display-sized bucket.
     func retry(displaySize: CGSize) async {
         cancel()
         image = nil
         await load(displaySize: displaySize)
     }
 
+    /// Updates observable loading state before scheduling the detached image request.
     private func beginRequest(pixelBucket: Int) {
         requestToken &+= 1
         loadTask?.cancel()
         loadingPixelBucket = pixelBucket
     }
 
+    /// Resolves an image through memory cache, disk cache, then the trusted network session.
     private static func loadImage(url: URL, pixelBucket: Int, cacheKey: String, cacheGeneration: UInt) async -> UIImage? {
         if let entry = await ThumbnailDiskCache.shared.entry(for: cacheKey, ifGeneration: cacheGeneration) {
             if let image = downsample(data: entry.data, pixelBucket: pixelBucket) { return image }
@@ -144,8 +150,11 @@ final class ThumbnailLoader: ObservableObject {
         return UIImage(cgImage: image)
     }
 
+    /// Estimates decoded RGBA memory cost for NSCache eviction accounting.
     private static func cost(of image: UIImage) -> Int { Int(image.size.width * image.size.height * image.scale * image.scale * 4) }
+    /// Distinguishes cached variants of the same artwork requested at different display resolutions.
     private static func cacheKey(for url: URL, pixelBucket: Int) -> NSString { "\(url.absoluteString)#\(pixelBucket)px" as NSString }
+    /// Rounds visible points to a bounded screen-scale pixel bucket for cache reuse while scrolling.
     static func pixelBucket(for displaySize: CGSize) -> Int {
         let pixels = max(1, Int(ceil(max(displaySize.width, displaySize.height) * UIScreen.main.scale)))
         return ((pixels + pixelBucketInterval - 1) / pixelBucketInterval) * pixelBucketInterval

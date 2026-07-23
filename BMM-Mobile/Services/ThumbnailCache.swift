@@ -49,6 +49,7 @@ actor ThumbnailDiskCache {
         enforceBudget()
     }
 
+    /// Removes one stale or invalid thumbnail only if its caller still owns the active cache generation.
     func removeEntry(for key: String, ifGeneration expectedGeneration: UInt) {
         guard adopt(expectedGeneration) else { return }
         try? FileManager.default.removeItem(at: fileURL(for: key))
@@ -61,6 +62,7 @@ actor ThumbnailDiskCache {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    /// Rejects delayed cache work after a global invalidation advances the generation counter.
     private func adopt(_ expectedGeneration: UInt) -> Bool {
         guard expectedGeneration >= generation else { return false }
         if expectedGeneration > generation {
@@ -109,6 +111,7 @@ actor ThumbnailDiskCache {
             .appendingPathComponent("ModThumbnails", isDirectory: true)
     }
 
+    /// Derives a filesystem-safe cache filename from a URL-derived thumbnail key.
     private func fileURL(for key: String) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         return directory.appendingPathComponent(digest).appendingPathExtension("image")
@@ -121,8 +124,10 @@ final class ThumbnailCache: ObservableObject {
 
     @Published private(set) var generation: UInt = 0
     private let loaders = NSHashTable<ThumbnailLoader>.weakObjects()
+    /// Keeps shared cache coordination behind the singleton instance.
     private init() {}
 
+    /// Retains a weak reference so shared invalidation can reset every currently visible loader.
     func register(_ loader: ThumbnailLoader) { loaders.add(loader) }
 
     /// Advances the shared generation so active loaders ignore stale disk and memory-cache entries.

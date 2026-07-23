@@ -5,6 +5,7 @@ nonisolated final class InstalledModRegistry {
     private let fileURL: URL
     private let fileManager: FileManager
 
+    /// Locates the registry independently of the user-selected external game folder.
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -24,6 +25,7 @@ nonisolated final class InstalledModRegistry {
         try save(records)
     }
 
+    /// Deletes the registry entry for one exact game-folder and normalized-mod-path pair.
     func remove(gameFolderID: String, modPath: String) throws {
         try save((try load()).filter {
             $0.gameFolderID != gameFolderID || $0.normalizedModPath != modPath
@@ -76,6 +78,7 @@ nonisolated final class InstalledModRegistry {
         if migrated != records { try save(migrated) }
     }
 
+    /// Returns the tracked record for one exact normalized folder path.
     func record(gameFolderID: String, modPath: String) throws -> InstalledModRecord? {
         try load().first {
             $0.gameFolderID == gameFolderID && $0.normalizedModPath == modPath
@@ -118,6 +121,7 @@ nonisolated final class InstalledModRegistry {
         }
     }
 
+    /// Loads and canonicalizes registry data, quarantining a corrupt JSON file rather than discarding silently.
     private func load() throws -> [InstalledModRecord] {
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
         let data = try Data(contentsOf: fileURL)
@@ -131,6 +135,7 @@ nonisolated final class InstalledModRegistry {
         }
     }
 
+    /// Serializes canonical registry records atomically into Application Support.
     private func save(_ records: [InstalledModRecord]) throws {
         try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(canonicalized(records))
@@ -162,6 +167,7 @@ nonisolated final class InstalledModRegistry {
         }
     }
 
+    /// Orders duplicate candidates by integrity and useful metadata before applying a deterministic tie-breaker.
     private func isPreferredCanonicalRecord(
         _ lhs: InstalledModRecord,
         _ rhs: InstalledModRecord
@@ -186,6 +192,7 @@ nonisolated final class InstalledModRegistry {
         return canonicalTieBreaker(for: lhs) < canonicalTieBreaker(for: rhs)
     }
 
+    /// Produces a stable total-order key for otherwise equally suitable duplicate records.
     private func canonicalTieBreaker(for record: InstalledModRecord) -> String {
         let references = record.dependencyReferences.map {
             "\($0.catalogID ?? "")\u{0}\($0.normalizedInstalledPath ?? "")"
@@ -195,6 +202,7 @@ nonisolated final class InstalledModRegistry {
         ] + record.dependencies.sorted() + references).joined(separator: "\u{1}")
     }
 
+    /// Clones a record under a durable folder identity while preserving every installation attribute.
     private func replacingGameFolderID(
         of record: InstalledModRecord,
         with gameFolderID: String

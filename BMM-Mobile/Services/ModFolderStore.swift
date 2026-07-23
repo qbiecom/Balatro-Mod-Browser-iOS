@@ -200,15 +200,18 @@ final class ModFolderStore: ObservableObject {
         )
     }
 
+    /// Looks up an installed mod by its normalized filesystem URL.
     func installedMod(id: URL) -> InstalledMod? {
         let path = id.standardizedFileURL.path.lowercased()
         return (enabledMods + disabledMods).first { $0.id.standardizedFileURL.path.lowercased() == path }
     }
 
+    /// Reports whether the mod belongs to the scan result without a `.lovelyignore` marker.
     func isEnabled(_ mod: InstalledMod) -> Bool {
         enabledMods.contains { $0.id.standardizedFileURL.path.lowercased() == mod.id.standardizedFileURL.path.lowercased() }
     }
 
+    /// Requests a catalog refresh that also bypasses the separate download-count cache.
     func forceRefreshCatalog() {
         startCatalogRefresh(forceDownloads: true)
     }
@@ -250,16 +253,19 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Resolves an installed folder to BMI before requesting its lazy full detail record.
     func loadDetail(for mod: InstalledMod) async {
         guard let catalogMod = catalogMod(forInstalledMod: mod) else { return }
         await loadDetail(for: catalogMod)
     }
 
+    /// Convenience detail loader for views that retain only a stable folder URL.
     func loadDetail(forInstalledModID id: URL) async {
         guard let mod = installedMod(id: id) else { return }
         await loadDetail(for: mod)
     }
 
+    /// Returns the catalog entry for BMI's case-insensitive stable identifier.
     func catalogMod(id: String) -> CatalogMod? {
         catalogMods[id.lowercased()]
     }
@@ -292,6 +298,7 @@ final class ModFolderStore: ObservableObject {
         apply(catalogMod.merged(with: detail))
     }
 
+    /// Determines installation through the same resilient matching used by catalog action buttons.
     func isInstalled(_ mod: CatalogMod) -> Bool {
         installedMod(for: mod) != nil
     }
@@ -317,6 +324,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Reports whether this catalog item is the target of the active serialized install.
     func isInstalling(_ mod: CatalogMod) -> Bool {
         installingModIDs.contains(mod.id)
     }
@@ -362,6 +370,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Dismisses a pending dependency decision and releases the reserved file-operation slot.
     func cancelDependencyInstall() {
         dependencyInstallRequest = nil
         releaseFolderOperation()
@@ -414,6 +423,7 @@ final class ModFolderStore: ObservableObject {
         isShowingGameFolderRelinkNotice = true
     }
 
+    /// Captures a bookmark off the picker path and serializes the asynchronous folder transition.
     private func beginActivatingGameFolder(at url: URL, bookmark suppliedBookmark: Data? = nil, identity suppliedIdentity: String? = nil) {
         guard folderTransitionTask == nil else {
             url.stopAccessingSecurityScopedResource()
@@ -479,6 +489,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Finds an existing Mods directory case-insensitively without creating application-owned folders.
     private func existingModsFolderURL(in gameFolderURL: URL) -> URL? {
         guard let children = try? FileManager.default.contentsOfDirectory(
             at: gameFolderURL,
@@ -532,11 +543,13 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Pauses disk activity in the background and refreshes folder state when the app becomes active.
     func applicationLifecycleDidChange(isActive: Bool) {
         isApplicationActive = isActive
         if isActive { requestModsRefresh() }
     }
 
+    /// Coalesces bursts of file-presenter notifications into one delayed directory scan.
     private func requestModsRefresh() {
         let previousTask = refreshTask
         refreshTask = Task { [weak self] in
@@ -579,6 +592,7 @@ final class ModFolderStore: ObservableObject {
     }
 
 
+    /// Checks the current update snapshot using the local folder name as its stable UI key.
     func isUpdateAvailable(for mod: InstalledMod) -> Bool {
         updateAvailableNames.contains(mod.name.lowercased())
     }
@@ -663,6 +677,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Starts a background BMI refresh only after the catalog cache exceeds its TTL.
     func refreshCatalogIfNeeded() {
         Task { [weak self] in
             guard let self else { return }
@@ -679,6 +694,7 @@ final class ModFolderStore: ObservableObject {
         return Date().timeIntervalSince(catalogRefreshedAt) > catalogCacheLifetime
     }
 
+    /// Ensures only one catalog synchronization task runs for the current cache generation.
     private func startCatalogRefresh(forceDownloads: Bool = false) {
         guard catalogRefreshTask == nil else { return }
         let generation = catalogGeneration
@@ -788,6 +804,7 @@ final class ModFolderStore: ObservableObject {
         return results
     }
 
+    /// Fetches one full catalog entry from BMI using a path-safe encoded stable ID.
     private func fetchModDetail(id: String) async throws -> CatalogMod {
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
         guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else { throw URLError(.badURL) }
@@ -798,6 +815,7 @@ final class ModFolderStore: ObservableObject {
         return try JSONDecoder().decode(CatalogMod.self, from: data)
     }
 
+    /// Indexes catalog records by lowercase BMI ID, merging duplicates from incremental responses.
     private func indexed(_ mods: [CatalogMod]) -> [String: CatalogMod] {
         var indexed: [String: CatalogMod] = [:]
         for mod in mods {
@@ -807,6 +825,7 @@ final class ModFolderStore: ObservableObject {
         return indexed
     }
 
+    /// Merges one catalog response and republishes the visible collection for SwiftUI detail updates.
     private func apply(_ mod: CatalogMod) {
         let current = catalogMods[mod.id.lowercased()]
         catalogMods[mod.id.lowercased()] = current?.merged(with: mod) ?? mod
@@ -815,6 +834,7 @@ final class ModFolderStore: ObservableObject {
         catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
+    /// Overlays still-fresh full-detail responses onto summary records loaded from the disk cache.
     private func applyCachedDetailsToCatalog() {
         let now = Date()
         for entry in detailCache.values where now.timeIntervalSince(entry.refreshedAt) < detailCacheLifetime {
@@ -825,6 +845,7 @@ final class ModFolderStore: ObservableObject {
         catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
+    /// Removes a BMI-deleted catalog entry and its separately cached full-detail response.
     private func remove(_ mod: CatalogMod) {
         catalogMods.removeValue(forKey: mod.id.lowercased())
         detailCache.removeValue(forKey: mod.id.lowercased())
@@ -848,11 +869,13 @@ final class ModFolderStore: ObservableObject {
         return removedIDs.count
     }
 
+    /// Rebuilds unambiguous display-name and folder-name aliases after catalog mutations.
     private func rebuildCatalogAliases() {
         catalogNameAliases = aliasIndex { $0.name }
         catalogFolderAliases = aliasIndex { $0.folderName }
     }
 
+    /// Maps only unique normalized aliases so collisions cannot identify the wrong local folder.
     private func aliasIndex(_ value: (CatalogMod) -> String?) -> [String: String] {
         var resolved: [String: String] = [:]
         var ambiguous = Set<String>()
@@ -881,6 +904,7 @@ final class ModFolderStore: ObservableObject {
         return canonicalID.flatMap { catalogMods[$0] }
     }
 
+    /// Resolves local metadata through the registry first, with folder-name matching as recovery fallback.
     private func catalogMod(forInstalledMod mod: InstalledMod) -> CatalogMod? {
         let path = mod.id.standardizedFileURL.path.lowercased()
         if let catalogID = installedCatalogIDsByPath[path], let catalogMod = catalogMods[catalogID.lowercased()] {
@@ -889,14 +913,17 @@ final class ModFolderStore: ObservableObject {
         return catalogMod(matchingLocalName: mod.name)
     }
 
+    /// Persists catalog changes through the shared snapshot writer.
     private func persistCatalog(generation: Int) {
         persistCache(generation: generation)
     }
 
+    /// Persists full-detail cache changes through the shared snapshot writer.
     private func persistDetails(generation: Int) {
         persistCache(generation: generation)
     }
 
+    /// Schedules a revision-guarded cache write so obsolete asynchronous work cannot overwrite fresh data.
     private func persistCache(generation: Int) {
         guard generation == catalogGeneration else { return }
         cacheRevision += 1
@@ -950,6 +977,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Runs an install flow while retaining the folder-operation lock across dependency prompts.
     private func startInstallTask(_ operation: @escaping @MainActor () async -> Void) {
         guard isFolderOperationBusy, installTask == nil else { return }
         installTask = Task { [weak self] in
@@ -963,6 +991,7 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
+    /// Acquires the single-writer guard used for all game-folder mutations.
     private func reserveFolderOperation() -> Bool {
         guard !isFolderOperationBusy, folderTransitionTask == nil else {
             showError(InstallerAvailability.busy.message)
@@ -972,6 +1001,7 @@ final class ModFolderStore: ObservableObject {
         return true
     }
 
+    /// Clears the single-writer guard after a completed, cancelled, or rejected install flow.
     private func releaseFolderOperation() {
         isFolderOperationBusy = false
         installTask = nil
@@ -990,6 +1020,7 @@ final class ModFolderStore: ObservableObject {
         var directDependencies: [String: [String]] = [:]
         var needsProvider = false
 
+        /// Performs depth-first dependency resolution while retaining a visiting set for cycle detection.
         func visit(_ mod: CatalogMod) -> Bool {
             let key = mod.id.lowercased()
             if visited.contains(key) { return true }
@@ -1033,13 +1064,16 @@ final class ModFolderStore: ObservableObject {
         return DependencyGraph(order: order, directDependencies: directDependencies)
     }
 
+    /// Resolves Steamodded only for catalog entries which explicitly declare that requirement.
     private func steamoddedDependency(for mod: CatalogMod) -> CatalogMod? {
         guard mod.requiresSteamodded == true else { return nil }
         return catalogDependency(named: "Steamodded")
     }
 
+    /// Returns the user-selectable Talisman providers when a dependency chain needs one and neither is installed.
     private func uninstalledTalismanProviderOptions(for mod: CatalogMod) -> [CatalogMod]? {
         var visited = Set<String>()
+        /// Walks loader requirements to determine whether this install path ultimately needs a provider.
         func transitivelyRequiresProvider(_ candidate: CatalogMod) -> Bool {
             guard visited.insert(candidate.id.lowercased()).inserted else { return false }
             if candidate.requiresTalisman == true { return true }
@@ -1051,10 +1085,12 @@ final class ModFolderStore: ObservableObject {
         return providers.contains(where: isInstalled) ? nil : providers
     }
 
+    /// Treats either Talisman or its Amulet fork as a valid provider for BMI's Talisman requirement.
     private func talismanProviderOptions() -> [CatalogMod] {
         ["Talisman", "Amulet"].compactMap { catalogDependency(named: $0) }
     }
 
+    /// Finds a dependency by normalized BMI name or stable ID.
     private func catalogDependency(named name: String) -> CatalogMod? {
         catalogItems.first {
             $0.name?.normalizedDependencyName == name.normalizedDependencyName
@@ -1121,6 +1157,7 @@ final class ModFolderStore: ObservableObject {
                 case url
             }
 
+            /// Accepts the known BMI download URL field spellings for compatibility with endpoint variants.
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 downloadURL = try container.decodeIfPresent(String.self, forKey: .downloadURL)
@@ -1151,6 +1188,7 @@ final class ModFolderStore: ObservableObject {
         return url
     }
 
+    /// Resolves Steamodded from its latest GitHub release rather than BMI's generic mod endpoint.
     private func latestSteamoddedReleaseURL() async throws -> URL {
         struct GitHubRelease: Decodable {
             let tagName: String
@@ -1179,6 +1217,7 @@ final class ModFolderStore: ObservableObject {
         return archiveURL
     }
 
+    /// Produces the deduplicated user-visible catalog while excluding Lovely's automatically installed folder.
     private func uniqueCatalogItems(from items: [String: CatalogMod]) -> [CatalogMod] {
         let unique = Dictionary(items.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return unique.values
@@ -1215,10 +1254,12 @@ final class ModFolderStore: ObservableObject {
         legacyGameFolderIDs = []
     }
 
+    /// Reads the filesystem identifier used to detect a no-op re-selection of the same folder.
     private func fileResourceIdentifier(for url: URL) -> AnyHashable? {
         (try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier) as? AnyHashable
     }
 
+    /// Collects historical path and resource identifiers used to migrate older registry records.
     private func legacyFolderIdentifiers(for url: URL) -> Set<String> {
         var identifiers = [url.standardizedFileURL.path.lowercased()]
         if let identifier = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier {
@@ -1227,11 +1268,13 @@ final class ModFolderStore: ObservableObject {
         return Set(identifiers)
     }
 
+    /// Publishes an actionable operation error for the shared alert presentation.
     private func showError(_ message: String) {
         errorMessage = message
         isShowingError = true
     }
 
+    /// Publishes non-fatal catalog maintenance information for the shared alert presentation.
     private func showCatalogInfo(_ message: String) {
         catalogInfoMessage = message
         isShowingCatalogInfo = true
