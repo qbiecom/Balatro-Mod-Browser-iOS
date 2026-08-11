@@ -303,6 +303,17 @@ final class ModFolderStore: ObservableObject {
         installedMod(for: mod) != nil
     }
 
+    /// Identifies the Steamodded catalog record, whose development builds may be installed separately from BMI.
+    func isSteamodded(_ mod: CatalogMod) -> Bool {
+        mod.name?.normalizedDependencyName == "steamodded"
+            || mod.id.normalizedDependencyName == "steamodded"
+    }
+
+    /// Resolves an installed folder before checking whether it is Steamodded.
+    func isSteamodded(_ mod: InstalledMod) -> Bool {
+        catalogMod(forInstalledMod: mod).map(isSteamodded) ?? false
+    }
+
     /// Finds a local installation using registry IDs first, then resilient catalog and folder-name matching.
     func installedMod(for targetMod: CatalogMod) -> InstalledMod? {
         let candidates = enabledMods + disabledMods
@@ -621,6 +632,29 @@ final class ModFolderStore: ObservableObject {
                 guard await self.downloadAndInstall(dependency, dependencies: graph.directDependencies[dependency.id.lowercased()] ?? []) else { return }
             }
             _ = await self.downloadAndInstall(catalogMod, replacing: true, dependencies: graph.directDependencies[catalogMod.id.lowercased()] ?? [], replacementModURL: localMod.id)
+        }
+    }
+
+    /// Replaces Steamodded with the current `main` branch archive from its official GitHub repository.
+    func installSteamoddedDevelopment(_ localMod: InstalledMod) {
+        guard let catalogMod = catalogMod(forInstalledMod: localMod), isSteamodded(catalogMod) else { return }
+        installSteamoddedDevelopment(catalogMod, replacing: localMod)
+    }
+
+    private func installSteamoddedDevelopment(_ mod: CatalogMod, replacing localMod: InstalledMod?) {
+        guard isInstallerAvailable else {
+            showError(installerAvailability.message)
+            return
+        }
+        guard isSteamodded(mod) else { return }
+        guard reserveFolderOperation() else { return }
+        startInstallTask {
+            _ = await self.downloadAndInstall(
+                mod,
+                replacing: localMod != nil,
+                replacementModURL: localMod?.id,
+                downloadURLOverride: Self.steamoddedDevelopmentURL
+            )
         }
     }
 
@@ -1103,7 +1137,8 @@ final class ModFolderStore: ObservableObject {
         _ mod: CatalogMod,
         replacing: Bool = false,
         dependencies: [String] = [],
-        replacementModURL: URL? = nil
+        replacementModURL: URL? = nil,
+        downloadURLOverride: URL? = nil
     ) async -> Bool {
         guard let modsFolderURL, let gameFolderID else { return false }
 
@@ -1115,7 +1150,12 @@ final class ModFolderStore: ObservableObject {
         }
 
         do {
-            let downloadURL = try await resolveDownloadURL(for: mod)
+            let downloadURL: URL
+            if let downloadURLOverride {
+                downloadURL = downloadURLOverride
+            } else {
+                downloadURL = try await resolveDownloadURL(for: mod)
+            }
             try await fileService.downloadAndInstall(from: downloadURL, mod: mod, dependencies: dependencies, modsFolderURL: modsFolderURL, gameFolderID: gameFolderID, replacing: replacing ? replacementModURL : nil)
             refreshMods()
             refreshAvailableUpdates()
@@ -1128,12 +1168,8 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    /// Requests BMI's tracked download URL, except for Steamodded which is sourced from its GitHub release.
+    /// Requests BMI's tracked download URL for a catalog install or update.
     private func resolveDownloadURL(for mod: CatalogMod) async throws -> URL {
-        if mod.name?.normalizedDependencyName == "steamodded" || mod.id.normalizedDependencyName == "steamodded" {
-            return try await latestSteamoddedReleaseURL()
-        }
-
         let id = mod.id
         let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
         let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? id
@@ -1188,34 +1224,7 @@ final class ModFolderStore: ObservableObject {
         return url
     }
 
-    /// Resolves Steamodded from its latest GitHub release rather than BMI's generic mod endpoint.
-    private func latestSteamoddedReleaseURL() async throws -> URL {
-        struct GitHubRelease: Decodable {
-            let tagName: String
-
-            enum CodingKeys: String, CodingKey {
-                case tagName = "tag_name"
-            }
-        }
-
-        guard let releaseURL = URL(string: "https://api.github.com/repos/Steamodded/smods/releases/latest") else {
-            throw ModInstallError.downloadFailed
-        }
-        var request = URLRequest(url: releaseURL)
-        request.setValue("BMM-Mobile", forHTTPHeaderField: "User-Agent")
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await downloadSession.session.data(for: request)
-        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-            throw ModInstallError.downloadFailed
-        }
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        guard let tag = release.tagName.addingPercentEncoding(withAllowedCharacters: allowed),
-              let archiveURL = URL(string: "https://github.com/Steamodded/smods/archive/refs/tags/\(tag).zip") else {
-            throw ModInstallError.downloadFailed
-        }
-        return archiveURL
-    }
+    private static let steamoddedDevelopmentURL = URL(string: "https://github.com/Steamodded/smods/archive/refs/heads/main.zip")!
 
     /// Produces the deduplicated user-visible catalog while excluding Lovely's automatically installed folder.
     private func uniqueCatalogItems(from items: [String: CatalogMod]) -> [CatalogMod] {

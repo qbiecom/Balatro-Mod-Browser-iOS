@@ -106,9 +106,11 @@ private struct ModDetailView: View {
 
     let installedModID: URL
     @ObservedObject var folderStore: ModFolderStore
+    @State private var isShowingDevelopmentBuildConfirmation = false
     private var mod: InstalledMod? { folderStore.installedMod(id: installedModID) }
     private var isEnabled: Bool { mod.map(folderStore.isEnabled) ?? false }
     private var isUpdateAvailable: Bool { mod.map(folderStore.isUpdateAvailable(for:)) ?? false }
+    private var isSteamodded: Bool { mod.map(folderStore.isSteamodded) ?? false }
 
     private var presentation: ModPresentation {
         guard let mod else {
@@ -141,6 +143,20 @@ private struct ModDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await folderStore.loadDetail(forInstalledModID: installedModID)
+        }
+        .confirmationDialog(
+            "Install Steamodded Development Build?",
+            isPresented: $isShowingDevelopmentBuildConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Install Development Build") {
+                if let mod {
+                    folderStore.installSteamoddedDevelopment(mod)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This replaces the installed BMI version with the latest code from Steamodded's main branch. Development builds may be unstable.")
         }
     }
 
@@ -180,6 +196,19 @@ private struct ModDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!folderStore.isInstallerAvailable)
                 .accessibilityHint(folderStore.installerAvailability.message)
+            }
+
+            if isSteamodded, mod != nil {
+                Button {
+                    isShowingDevelopmentBuildConfirmation = true
+                } label: {
+                    Label("Install Development Build", systemImage: "wrench.and.screwdriver")
+                        .font(.balatroChrome(16))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!folderStore.isInstallerAvailable)
+                .accessibilityHint("Replaces Steamodded with the latest build from its official repository")
             }
 
             if let downloads = presentation.downloads {

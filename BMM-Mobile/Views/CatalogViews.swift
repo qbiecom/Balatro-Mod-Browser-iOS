@@ -285,6 +285,7 @@ struct CatalogModDetailView: View {
     let mod: CatalogMod
     @ObservedObject var folderStore: ModFolderStore
     @State private var isShowingDeleteConfirmation = false
+    @State private var isShowingDevelopmentBuildConfirmation = false
 
     private var displayedMod: CatalogMod {
         folderStore.catalogMod(id: mod.id) ?? mod
@@ -296,6 +297,10 @@ struct CatalogModDetailView: View {
 
     private var isEnabled: Bool {
         installedMod.map(folderStore.isEnabled) ?? false
+    }
+
+    private var isSteamodded: Bool {
+        folderStore.isSteamodded(displayedMod)
     }
 
     var body: some View {
@@ -332,6 +337,20 @@ struct CatalogModDetailView: View {
         } message: {
             Text("This permanently removes the installed mod folder.")
         }
+        .confirmationDialog(
+            "Install Steamodded Development Build?",
+            isPresented: $isShowingDevelopmentBuildConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Install Development Build") {
+                if let installedMod {
+                    folderStore.installSteamoddedDevelopment(installedMod)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This replaces the installed BMI version with the latest code from Steamodded's main branch. Development builds may be unstable.")
+        }
     }
 
     private var sidebar: some View {
@@ -359,6 +378,29 @@ struct CatalogModDetailView: View {
                     set: { folderStore.setEnabled($0, for: installedMod) }
                 ))
                 .tint(.green)
+
+                if folderStore.isUpdateAvailable(for: installedMod) {
+                    Button {
+                        folderStore.update(installedMod)
+                    } label: {
+                        Label("Update from Catalog", systemImage: "arrow.down.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!folderStore.isInstallerAvailable)
+                }
+
+                if isSteamodded {
+                    Button {
+                        isShowingDevelopmentBuildConfirmation = true
+                    } label: {
+                        Label("Install Development Build", systemImage: "wrench.and.screwdriver")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!folderStore.isInstallerAvailable)
+                    .accessibilityHint("Replaces Steamodded with the latest build from its official repository")
+                }
 
                 Button(role: .destructive) {
                     isShowingDeleteConfirmation = true
