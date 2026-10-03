@@ -89,6 +89,15 @@ actor ModFileService {
         try Task.checkCancellation()
         let modsFolderIdentity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID)
         let validatedModURL = try validatedImmediateModChild(modURL, in: modsFolderURL)
+        let mod = InstalledMod(id: validatedModURL, name: validatedModURL.lastPathComponent)
+        if !enabled {
+            let dependents = try dependentRecords(for: mod, gameFolderID: gameFolderID).filter { record in
+                let url = URL(fileURLWithPath: record.path)
+                return (try? validatedImmediateModChild(url, in: modsFolderURL)) != nil
+                    && !fileManager.fileExists(atPath: url.appendingPathComponent(".lovelyignore").path)
+            }
+            guard dependents.isEmpty else { throw ModFileServiceError.enabledDependents(dependents.map(\.name)) }
+        }
         let ignoreURL = validatedModURL.appendingPathComponent(".lovelyignore")
         if fileManager.fileExists(atPath: ignoreURL.path) {
             let values = try ignoreURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -132,18 +141,7 @@ actor ModFileService {
         let modURL = try validatedImmediateModChild(mod.id, in: modsFolderURL)
         let normalizedPath = modURL.standardizedFileURL.path.lowercased()
         let record = try registry.record(gameFolderID: gameFolderID, modPath: normalizedPath)
-        let stableDependents = try registry.dependents(
-            of: InstalledModDependencyReference(
-                catalogID: record?.catalogID,
-                normalizedInstalledPath: nil
-            ),
-            in: gameFolderID
-        )
-        let legacyDependents = try registry.dependents(of: mod.name, in: gameFolderID)
-        let dependents = Dictionary(
-            (stableDependents + legacyDependents).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        ).values
+        let dependents = try dependentRecords(for: mod, gameFolderID: gameFolderID)
         guard dependents.isEmpty else {
             throw ModFileServiceError.hasDependents(dependents.map(\.name))
         }
@@ -181,19 +179,43 @@ actor ModFileService {
         }
     }
 
+    /// Matches catalog IDs, path-only references, and legacy display names independently.
+    private func dependentRecords(for mod: InstalledMod, gameFolderID: String) throws -> [InstalledModRecord] {
+        let normalizedPath = mod.id.standardizedFileURL.path.lowercased()
+        let record = try registry.record(gameFolderID: gameFolderID, modPath: normalizedPath)
+        let stableDependents = try registry.dependents(
+            of: InstalledModDependencyReference(
+                catalogID: record?.catalogID,
+                normalizedInstalledPath: nil
+            ),
+            in: gameFolderID
+        )
+        let pathDependents = try registry.dependents(
+            of: InstalledModDependencyReference(catalogID: nil, normalizedInstalledPath: normalizedPath),
+            in: gameFolderID
+        )
+        let legacyDependents = try registry.dependents(of: mod.name, in: gameFolderID)
+        let dependents = Dictionary(
+            (stableDependents + pathDependents + legacyDependents).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        ).values
+        return Array(dependents)
+    }
+
     /// Retrieves the persisted installation records that still correspond to the supplied folders.
     func updateRecords(for mods: [InstalledMod], gameFolderID: String) throws -> [InstalledModRecord] {
-        try mods.compactMap { try registry.record(gameFolderID: gameFolderID, modPath: $0.id.standardizedFileURL.path.lowercased()) }
+        let records = try mods.compactMap { try registry.record(gameFolderID: gameFolderID, modPath: $0.id.standardizedFileURL.path.lowercased()) }
+        return Array(Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values)
     }
 
     /// Provides filesystem timestamps for untracked-install update detection.
     func modificationDates(for mods: [InstalledMod]) -> [String: Date] {
-        Dictionary(uniqueKeysWithValues: mods.compactMap { mod in
+        Dictionary(mods.compactMap { mod in
             guard let date = try? mod.id.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
                 return nil
             }
             return (mod.id.standardizedFileURL.path.lowercased(), date)
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Completes committed replacements or rolls back incomplete updates left by an interrupted operation.
@@ -621,12 +643,15 @@ actor ModFileService {
 
 enum ModFileServiceError: LocalizedError {
     case hasDependents([String])
+    case enabledDependents([String])
     case folderAccess(URL)
 
     var errorDescription: String? {
         switch self {
         case let .hasDependents(names):
             "This mod is required by: \(names.joined(separator: ", ")). Remove those mods first."
+        case let .enabledDependents(names):
+            "This mod is required by enabled mods: \(names.joined(separator: ", ")). Disable those mods first."
         case .folderAccess:
             "Balatro Mod Browser could not read this game's Mods folder. Re-select the game folder to restore access; installed mods have not been changed."
         }

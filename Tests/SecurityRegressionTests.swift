@@ -157,6 +157,45 @@ final class SecurityRegressionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
     }
 
+    func testPathOnlyDependencyPreventsDeletion() async throws {
+        let dependency = try makeDirectory("Mods/provider")
+        let dependent = try makeDirectory("Mods/dependent")
+        try registerDependent(at: dependent, requiring: dependency)
+        do {
+            try await service.delete(mod: InstalledMod(id: dependency, name: "provider"), gameFolderID: "game")
+            XCTFail("Path-only dependency references must protect their provider")
+        } catch ModFileServiceError.hasDependents { }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dependency.path))
+    }
+
+    func testEnabledDependentPreventsDisablingProvider() async throws {
+        let mods = try makeDirectory("Mods")
+        let dependency = try makeDirectory("Mods/provider")
+        let dependent = try makeDirectory("Mods/dependent")
+        try registerDependent(at: dependent, requiring: dependency)
+        do {
+            try await service.setEnabled(false, modURL: dependency, modsFolderURL: mods, gameFolderID: "game")
+            XCTFail("An enabled dependent must protect its provider")
+        } catch ModFileServiceError.enabledDependents { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dependency.appendingPathComponent(".lovelyignore").path))
+        try Data().write(to: dependent.appendingPathComponent(".lovelyignore"))
+        try await service.setEnabled(false, modURL: dependency, modsFolderURL: mods, gameFolderID: "game")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dependency.appendingPathComponent(".lovelyignore").path))
+    }
+
+    func testDuplicateInstalledPathsDoNotCrashDictionaryConstruction() async throws {
+        let url = try makeDirectory("Mods/mod")
+        let installed = InstalledMod(id: url, name: "mod")
+        let registry = InstalledModRegistry(storageRootURL: root)
+        try registry.add(InstalledModRecord(gameFolderID: "game", name: "mod", path: url.path,
+                                           normalizedModPath: url.path.lowercased(), dependencies: [],
+                                           currentVersion: "1", orphaned: false, catalogID: "mod"))
+        let records = try await service.updateRecords(for: [installed, installed], gameFolderID: "game")
+        let dates = await service.modificationDates(for: [installed, installed])
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(dates.count, 1)
+    }
+
     func testInterruptedUpdateRestoresOriginalAndRegistry() async throws {
         let mods = try makeDirectory("Mods")
         let destination = mods.appendingPathComponent("mod", isDirectory: true)
@@ -184,6 +223,16 @@ final class SecurityRegressionTests: XCTestCase {
 
     private func mod(_ values: [String: Any]) throws -> CatalogMod {
         try JSONDecoder().decode(CatalogMod.self, from: JSONSerialization.data(withJSONObject: values))
+    }
+
+    private func registerDependent(at url: URL, requiring dependency: URL) throws {
+        let registry = InstalledModRegistry(storageRootURL: root)
+        try registry.add(InstalledModRecord(
+            gameFolderID: "game", name: url.lastPathComponent, path: url.path,
+            normalizedModPath: url.path.lowercased(), dependencies: [], currentVersion: "1",
+            orphaned: false, catalogID: "dependent",
+            dependencyReferences: [InstalledModDependencyReference(catalogID: nil, normalizedInstalledPath: dependency.path.lowercased())]
+        ))
     }
 
     private func makeArchive(path: String, content: Data) throws -> URL {

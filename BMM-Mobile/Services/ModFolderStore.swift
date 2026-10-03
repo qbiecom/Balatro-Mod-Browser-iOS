@@ -1092,7 +1092,8 @@ final class ModFolderStore: ObservableObject {
                     showError("\(mod.name ?? mod.id) requires Talisman or Amulet, but neither is available in the current catalog.")
                     return false
                 }
-                guard let provider = talismanProvider ?? providers.first(where: { isInstalled($0) }) else {
+                guard let provider = talismanProvider ?? providers.first(where: { installedMod(for: $0).map(isEnabled) == true })
+                    ?? providers.first(where: { isInstalled($0) }) else {
                     needsProvider = true
                     visiting.remove(key)
                     return false
@@ -1100,6 +1101,12 @@ final class ModFolderStore: ObservableObject {
                 direct.append(provider)
             }
             directDependencies[key] = Array(Set(direct.map(\.id))).sorted()
+            for dependency in direct {
+                if let installed = installedMod(for: dependency), !isEnabled(installed) {
+                    showError("\(mod.name ?? mod.id) requires \(dependency.name ?? dependency.id), which is disabled. Enable it in Installed Mods before continuing.")
+                    return false
+                }
+            }
             for dependency in direct where !isInstalled(dependency) {
                 guard visit(dependency) else { return false }
             }
