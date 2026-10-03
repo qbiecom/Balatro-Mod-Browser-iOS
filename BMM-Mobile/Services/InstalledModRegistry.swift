@@ -6,9 +6,9 @@ nonisolated final class InstalledModRegistry {
     private let fileManager: FileManager
 
     /// Locates the registry independently of the user-selected external game folder.
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, storageRootURL: URL? = nil) {
         self.fileManager = fileManager
-        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let applicationSupport = storageRootURL ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         fileURL = applicationSupport
             .appendingPathComponent("BMM Mobile", isDirectory: true)
             .appendingPathComponent("installed-mods.json")

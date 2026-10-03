@@ -18,6 +18,9 @@ jobs:
       - name: Show selected Xcode version
         run: xcodebuild -version
 
+      - name: Run security and recovery regression tests
+        run: swift test
+
       - name: Archive unsigned app
         run: |
           xcodebuild archive \

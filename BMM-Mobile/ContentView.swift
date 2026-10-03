@@ -311,6 +311,15 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 24) {
                 if folderStore.gameFolderURL == nil {
                     firstRunFolderPicker
+                } else if folderStore.installerAvailability == .noModsFolder {
+                    ContentUnavailableView {
+                        Label("Mods Folder Unavailable", systemImage: "folder.badge.questionmark")
+                    } description: {
+                        Text(folderStore.installerAvailability.message)
+                    } actions: {
+                        Button("Choose Game Folder") { isShowingFolderPicker = true }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     if folderStore.isLoadingCatalog {
                         HStack(spacing: 8) {

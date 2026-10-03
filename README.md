@@ -30,6 +30,12 @@ Balatro Mod Browser is intended for sideloading on iOS and iPadOS. Download the 
 
 After opening the app, choose the Lovely Mobile Maker game folder. Balatro Mod Browser manages its `Mods` directory.
 
+## Development checks
+
+Run `swift test` on macOS with Swift 6.2 or later. The tests exercise the app's model, trusted networking, archive extraction, and transaction recovery code, using temporary folders and synthetic archives. The unsigned IPA workflow runs them before archiving the iOS app. An iOS device smoke test is still needed for the document picker, security-scoped folder access, and SwiftUI interactions.
+
+Normal Steamodded installations use the latest published release from the official `Steamodded/smods` GitHub repository. The development-build option explicitly installs its `main` branch instead.
+
 ## Notes
 
 Mod data is provided by the [Balatro Mod Index](https://api-bmi.dasguney.com). Mod downloads and their contents are supplied by the individual mod authors; install mods you trust.

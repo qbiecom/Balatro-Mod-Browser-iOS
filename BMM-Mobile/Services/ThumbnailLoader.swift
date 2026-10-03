@@ -17,13 +17,7 @@ final class ThumbnailLoader: ObservableObject {
         cache.totalCostLimit = 48 * 1024 * 1024
         return cache
     }()
-    private static let sharedSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.urlCache = URLCache(memoryCapacity: 16 * 1024 * 1024, diskCapacity: 64 * 1024 * 1024)
-        configuration.httpMaximumConnectionsPerHost = 10
-        return URLSession(configuration: configuration)
-    }()
+    private static let sharedSession = TrustedDownloadSession()
 
     private var url: URL?
     private var loadTask: Task<UIImage?, Never>?
@@ -112,6 +106,7 @@ final class ThumbnailLoader: ObservableObject {
     func retry(displaySize: CGSize) async {
         cancel()
         image = nil
+        imagePixelBucket = nil
         await load(displaySize: displaySize)
     }
 
@@ -129,10 +124,8 @@ final class ThumbnailLoader: ObservableObject {
             await ThumbnailDiskCache.shared.removeEntry(for: cacheKey, ifGeneration: cacheGeneration)
         }
         do {
-            let (data, response) = try await sharedSession.data(from: url)
-            guard let response = response as? HTTPURLResponse,
-                  200..<300 ~= response.statusCode,
-                  data.count <= maximumTransferBytes,
+            let (data, response) = try await sharedSession.data(from: url, maximumBytes: maximumTransferBytes)
+            guard data.count <= maximumTransferBytes,
                   let mime = response.mimeType?.lowercased(), acceptedMIMETypes.contains(mime),
                   !Task.isCancelled else { return nil }
             guard let image = downsample(data: data, pixelBucket: pixelBucket) else { return nil }

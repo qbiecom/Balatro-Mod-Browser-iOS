@@ -88,7 +88,12 @@ struct CatalogMod: Codable, Identifiable {
     }
 
     var websiteURL: URL? {
-        (repository ?? homepage).flatMap(URL.init(string:))
+        [repository, homepage].compactMap { value -> URL? in
+            guard let value, let url = URL(string: value),
+                  let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+                  url.host?.isEmpty == false, url.user == nil, url.password == nil else { return nil }
+            return url
+        }.first
     }
 
     var thumbnailURL: URL? {
@@ -96,6 +101,13 @@ struct CatalogMod: Codable, Identifiable {
         if let absoluteURL = URL(string: thumbnailPath), absoluteURL.scheme != nil { return absoluteURL }
         let path = thumbnailPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: "https://api-bmi.dasguney.com/")?.appendingPathComponent(path)
+    }
+
+    /// Prevents older cached details from replacing a newer catalog version or timestamp.
+    func canUseCachedDetail(_ detail: CatalogMod) -> Bool {
+        detail.id.caseInsensitiveCompare(id) == .orderedSame
+            && (detail.updatedAt?.value ?? 0) >= (updatedAt?.value ?? 0)
+            && (version == nil || detail.version == version)
     }
 
     /// Preserves summary-list fields while overlaying any richer values returned by BMI's detail endpoint.
@@ -371,7 +383,7 @@ enum ModInstallError: LocalizedError {
         case .invalidUpdateTarget: "The selected mod folder is no longer an immediate child of this game's Mods folder."
         case .unsupportedArchive: "This archive format is not supported. Please use a ZIP release."
         case .unsafeArchive: "This archive contains an unsafe file path."
-        case .archiveTooLarge: "This archive expands beyond the 2 GB safety limit."
+        case .archiveTooLarge: "This archive exceeds a safety limit: 256 MB downloaded, 1 GB extracted, or 128 MB per file."
         case .tooManyArchiveFiles: "This archive contains more than 5,000 files."
         case .insufficientStorage: "There is not enough free storage to safely extract this archive."
         case .untrustedDownloadURL: "The download URL or redirect was not from an approved HTTPS host."
