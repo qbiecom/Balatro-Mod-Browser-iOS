@@ -17,8 +17,11 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
 
     private(set) var session: URLSession!
 
-    override init() {
-        let configuration = URLSessionConfiguration.ephemeral
+    override convenience init() {
+        self.init(configuration: .ephemeral)
+    }
+
+    init(configuration: URLSessionConfiguration) {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -35,6 +38,28 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
               let host = url.host?.lowercased(),
               trustedHosts.contains(host) else { return false }
         return true
+    }
+
+    /// Bounds the actual transfer, including chunked responses with no declared length.
+    func data(from url: URL, maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        try await data(for: URLRequest(url: url), maximumBytes: maximumBytes)
+    }
+
+    func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        guard let url = request.url, Self.isTrusted(url) else { throw ModInstallError.untrustedDownloadURL }
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse,
+              let finalURL = response.url, Self.isTrusted(finalURL),
+              200..<300 ~= response.statusCode else { throw URLError(.badServerResponse) }
+        guard response.expectedContentLength <= Int64(maximumBytes) else { throw URLError(.dataLengthExceedsMaximum) }
+        var data = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard data.count < maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(byte)
+        }
+        return (data, response)
     }
 
     /// Rejects redirects that leave the approved-host allowlist before the URL session follows them.

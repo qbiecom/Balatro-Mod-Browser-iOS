@@ -6,12 +6,14 @@ final class ModFolderStore: ObservableObject {
     enum InstallerAvailability: Equatable {
         case available
         case noGameFolder
+        case noModsFolder
         case busy
 
         var message: String {
             switch self {
             case .available: "Ready to install mods."
             case .noGameFolder: "Choose a Lovely Mobile Maker game folder before installing mods."
+            case .noModsFolder: "This game folder has no accessible Mods directory. Launch Lovely Mobile Maker's Balatro once, then re-select the game folder."
             case .busy: "Another install or update is in progress."
             }
         }
@@ -99,7 +101,8 @@ final class ModFolderStore: ObservableObject {
     var lastCatalogRefresh: Date? { catalogRefreshedAt }
     var installerAvailability: InstallerAvailability {
         if gameFolderURL == nil { return .noGameFolder }
-        if isFolderOperationBusy || folderTransitionTask != nil { return .busy }
+        if isFolderOperationBusy || folderTransitionTask != nil || recoveryTask != nil { return .busy }
+        if modsFolderURL == nil { return .noModsFolder }
         return .available
     }
     var isInstallerAvailable: Bool { installerAvailability == .available }
@@ -273,9 +276,11 @@ final class ModFolderStore: ObservableObject {
     /// Loads a full BMI record lazily, coalescing concurrent requests and retaining it for the detail-cache TTL.
     func loadDetail(for catalogMod: CatalogMod) async {
         let key = catalogMod.id.lowercased()
+        let currentMod = catalogMods[key] ?? catalogMod
         if let cached = detailCache[key],
-           Date().timeIntervalSince(cached.refreshedAt) < detailCacheLifetime {
-            apply(catalogMod.merged(with: cached.mod))
+           Date().timeIntervalSince(cached.refreshedAt) < detailCacheLifetime,
+           currentMod.canUseCachedDetail(cached.mod) {
+            apply(currentMod.merged(with: cached.mod))
             return
         }
 
@@ -290,12 +295,15 @@ final class ModFolderStore: ObservableObject {
         }
         detailTasks[key] = task
         let detail = await task.value
-        detailTasks[key] = nil
         guard !Task.isCancelled, generation == catalogGeneration else { return }
+        detailTasks[key] = nil
         guard let detail else { return }
+        guard let current = catalogMods[key],
+              detail.id.caseInsensitiveCompare(current.id) == .orderedSame,
+              (detail.updatedAt?.value ?? 0) >= (current.updatedAt?.value ?? 0) else { return }
         detailCache[key] = DetailCacheEntry(mod: detail, refreshedAt: Date())
         persistDetails(generation: generation)
-        apply(catalogMod.merged(with: detail))
+        apply(current.merged(with: detail))
     }
 
     /// Determines installation through the same resilient matching used by catalog action buttons.
@@ -504,21 +512,23 @@ final class ModFolderStore: ObservableObject {
     private func existingModsFolderURL(in gameFolderURL: URL) -> URL? {
         guard let children = try? FileManager.default.contentsOfDirectory(
             at: gameFolderURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         ) else {
             return nil
         }
 
         return children.first { child in
-            child.lastPathComponent.caseInsensitiveCompare("Mods") == .orderedSame
-                && (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            return child.lastPathComponent.caseInsensitiveCompare("Mods") == .orderedSame
+                && values?.isDirectory == true && values?.isSymbolicLink != true
         }
     }
 
     /// Re-scans the Mods directory and rebuilds UI state and registry-to-catalog associations.
     private func refreshMods() {
-        guard isApplicationActive, let modsFolderURL, let gameFolderID else { return }
+        guard isApplicationActive, !isFolderOperationBusy, recoveryTask == nil,
+              let modsFolderURL, let gameFolderID else { return }
         let generation = gameFolderGeneration
         let previousTask = scanTask
         scanTask = Task { [weak self] in
@@ -598,6 +608,7 @@ final class ModFolderStore: ObservableObject {
                 legacyGameFolderIDs: legacyGameFolderIDs
             )
             guard !Task.isCancelled, generation == gameFolderGeneration else { return }
+            recoveryTask = nil
             refreshMods()
         }
     }
@@ -818,7 +829,12 @@ final class ModFolderStore: ObservableObject {
     private func fetchCatalogPages(path: String, query: [URLQueryItem]) async throws -> [CatalogMod] {
         var cursor: String?
         var results: [CatalogMod] = []
+        var seenCursors = Set<String>()
+        var pageCount = 0
         repeat {
+            try Task.checkCancellation()
+            pageCount += 1
+            guard pageCount <= 100 else { throw URLError(.badServerResponse) }
             var components = URLComponents(string: "https://api-bmi.dasguney.com/\(path)")
             var items = query + [
                 URLQueryItem(name: "limit", value: "200"),
@@ -827,25 +843,21 @@ final class ModFolderStore: ObservableObject {
             if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
             components?.queryItems = items
             guard let url = components?.url else { throw URLError(.badURL) }
-            let (data, response) = try await downloadSession.session.data(from: url)
-            guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-                throw URLError(.badServerResponse)
-            }
+            let (data, _) = try await downloadSession.data(from: url, maximumBytes: 4 * 1024 * 1024)
             let page = try JSONDecoder().decode(CatalogPage.self, from: data)
             results.append(contentsOf: page.items)
             cursor = page.nextCursor
+            if let cursor, !seenCursors.insert(cursor).inserted { throw URLError(.badServerResponse) }
         } while cursor != nil
         return results
     }
 
     /// Fetches one full catalog entry from BMI using a path-safe encoded stable ID.
     private func fetchModDetail(id: String) async throws -> CatalogMod {
-        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let pathAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~@"))
+        guard id != ".", id != "..", let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) else { throw URLError(.badURL) }
         guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else { throw URLError(.badURL) }
-        let (data, response) = try await downloadSession.session.data(from: url)
-        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, _) = try await downloadSession.data(from: url, maximumBytes: 4 * 1024 * 1024)
         return try JSONDecoder().decode(CatalogMod.self, from: data)
     }
 
@@ -862,6 +874,9 @@ final class ModFolderStore: ObservableObject {
     /// Merges one catalog response and republishes the visible collection for SwiftUI detail updates.
     private func apply(_ mod: CatalogMod) {
         let current = catalogMods[mod.id.lowercased()]
+        if let cached = detailCache[mod.id.lowercased()], !mod.canUseCachedDetail(cached.mod) {
+            detailCache.removeValue(forKey: mod.id.lowercased())
+        }
         catalogMods[mod.id.lowercased()] = current?.merged(with: mod) ?? mod
         rebuildCatalogAliases()
         // Publishing the refreshed collection redraws catalog detail screens after their lazy detail request completes.
@@ -872,7 +887,7 @@ final class ModFolderStore: ObservableObject {
     private func applyCachedDetailsToCatalog() {
         let now = Date()
         for entry in detailCache.values where now.timeIntervalSince(entry.refreshedAt) < detailCacheLifetime {
-            guard let current = catalogMods[entry.mod.id.lowercased()] else { continue }
+            guard let current = catalogMods[entry.mod.id.lowercased()], current.canUseCachedDetail(entry.mod) else { continue }
             catalogMods[entry.mod.id.lowercased()] = current.merged(with: entry.mod)
         }
         rebuildCatalogAliases()
@@ -1027,8 +1042,8 @@ final class ModFolderStore: ObservableObject {
 
     /// Acquires the single-writer guard used for all game-folder mutations.
     private func reserveFolderOperation() -> Bool {
-        guard !isFolderOperationBusy, folderTransitionTask == nil else {
-            showError(InstallerAvailability.busy.message)
+        guard isInstallerAvailable else {
+            showError(installerAvailability.message)
             return false
         }
         isFolderOperationBusy = true
@@ -1039,6 +1054,7 @@ final class ModFolderStore: ObservableObject {
     private func releaseFolderOperation() {
         isFolderOperationBusy = false
         installTask = nil
+        refreshMods()
     }
 
     private struct DependencyGraph {
@@ -1170,19 +1186,17 @@ final class ModFolderStore: ObservableObject {
 
     /// Requests BMI's tracked download URL for a catalog install or update.
     private func resolveDownloadURL(for mod: CatalogMod) async throws -> URL {
+        if isSteamodded(mod) { return try await latestSteamoddedReleaseURL() }
         let id = mod.id
-        let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? id
+        let pathAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~@"))
+        guard id != ".", id != "..", let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) else { throw ModInstallError.downloadFailed }
         guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)/download") else {
             throw ModInstallError.downloadFailed
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        let (data, response) = try await downloadSession.session.data(for: request)
-        guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else {
-            throw ModInstallError.downloadFailed
-        }
+        let (data, response) = try await downloadSession.data(for: request, maximumBytes: 1024 * 1024)
 
         struct DownloadResponse: Decodable {
             let downloadURL: String?
@@ -1206,10 +1220,7 @@ final class ModFolderStore: ObservableObject {
             guard let detailURL = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else {
                 throw ModInstallError.downloadFailed
             }
-            let (detailData, detailResponse) = try await downloadSession.session.data(from: detailURL)
-            guard let detailResponse = detailResponse as? HTTPURLResponse, 200..<300 ~= detailResponse.statusCode else {
-                throw ModInstallError.downloadFailed
-            }
+            let (detailData, _) = try await downloadSession.data(from: detailURL, maximumBytes: 4 * 1024 * 1024)
             let payload = try JSONDecoder().decode(DownloadResponse.self, from: detailData)
             guard let downloadURL = payload.downloadURL, let url = URL(string: downloadURL) else {
                 throw ModInstallError.downloadFailed
@@ -1222,6 +1233,20 @@ final class ModFolderStore: ObservableObject {
             throw ModInstallError.downloadFailed
         }
         return url
+    }
+
+    /// Installs the official published release, keeping development builds an explicit choice.
+    private func latestSteamoddedReleaseURL() async throws -> URL {
+        struct Release: Decodable {
+            let zipball_url: URL
+        }
+        let endpoint = URL(string: "https://api.github.com/repos/Steamodded/smods/releases/latest")!
+        var request = URLRequest(url: endpoint)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, _) = try await downloadSession.data(for: request, maximumBytes: 1024 * 1024)
+        let release = try JSONDecoder().decode(Release.self, from: data)
+        guard TrustedDownloadSession.isTrusted(release.zipball_url) else { throw ModInstallError.untrustedDownloadURL }
+        return release.zipball_url
     }
 
     private static let steamoddedDevelopmentURL = URL(string: "https://github.com/Steamodded/smods/archive/refs/heads/main.zip")!

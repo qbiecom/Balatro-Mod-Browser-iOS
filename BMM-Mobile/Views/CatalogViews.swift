@@ -94,7 +94,7 @@ struct AllModsView: View {
                         ForEach(sortedMods) { mod in
                             CatalogTile(
                                 mod: mod,
-                                isInstalled: installedFolderNames.contains(mod.installFolderName.lowercased()),
+                                isInstalled: folderStore.isInstalled(mod),
                                 isInstalling: isInstalling(mod),
                                 folderStore: folderStore,
                                 layout: layout,

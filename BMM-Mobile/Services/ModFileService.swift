@@ -10,13 +10,16 @@ actor ModFileService {
     private static let maximumArchivePathDepth = 32
     private let fileManager = FileManager.default
     private let downloadSession: TrustedDownloadSession
-    private let registry = InstalledModRegistry()
-    private let recoveryStore = UpdateRecoveryStore()
-    private let deletionRecoveryStore = DeletionRecoveryStore()
+    private let registry: InstalledModRegistry
+    private let recoveryStore: UpdateRecoveryStore
+    private let deletionRecoveryStore: DeletionRecoveryStore
 
     /// Injects the redirect-validating session used by every archive download.
-    init(downloadSession: TrustedDownloadSession = TrustedDownloadSession()) {
+    init(downloadSession: TrustedDownloadSession = TrustedDownloadSession(), storageRootURL: URL? = nil) {
         self.downloadSession = downloadSession
+        registry = InstalledModRegistry(storageRootURL: storageRootURL)
+        recoveryStore = UpdateRecoveryStore(storageRootURL: storageRootURL)
+        deletionRecoveryStore = DeletionRecoveryStore(storageRootURL: storageRootURL)
     }
 
     struct ScanResult {
@@ -87,6 +90,11 @@ actor ModFileService {
         let modsFolderIdentity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: gameFolderID)
         let validatedModURL = try validatedImmediateModChild(modURL, in: modsFolderURL)
         let ignoreURL = validatedModURL.appendingPathComponent(".lovelyignore")
+        if fileManager.fileExists(atPath: ignoreURL.path) {
+            let values = try ignoreURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size <= 64 * 1024 else { throw ModInstallError.invalidUpdateTarget }
+        }
         let previousMarker = fileManager.fileExists(atPath: ignoreURL.path)
             ? try Data(contentsOf: ignoreURL)
             : nil
@@ -105,6 +113,8 @@ actor ModFileService {
                 throw CocoaError(.fileWriteUnknown)
             }
         } catch {
+            try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+            _ = try validatedImmediateModChild(validatedModURL, in: modsFolderURL)
             if let previousMarker {
                 try? previousMarker.write(to: ignoreURL, options: .atomic)
             } else {
@@ -281,28 +291,39 @@ actor ModFileService {
         let sourceURL = folders.count == 1 && !hasRootFiles ? folders[0] : stagingURL
         let wasDisabled = replacementModURL != nil && fileManager.fileExists(atPath: destinationURL.appendingPathComponent(".lovelyignore").path)
         var transaction: UpdateTransaction?
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
-            guard replacementModURL != nil else { throw ModInstallError.alreadyInstalled }
-            let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
-            try fileManager.createDirectory(at: backupsURL, withIntermediateDirectories: true)
-            let backupURL = try containedChildURL(named: "\(folderName)-\(UUID().uuidString)", in: backupsURL)
-            let normalizedPath = destinationURL.standardizedFileURL.path.lowercased()
-            let originalRecord = try registry.record(gameFolderID: gameFolderID, modPath: normalizedPath) ?? InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: normalizedPath, dependencies: [], currentVersion: nil, orphaned: false, catalogID: nil)
-            let replacementRecord = InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: normalizedPath, dependencies: dependencies, currentVersion: mod.version, orphaned: false, catalogID: mod.id)
-            var pending = UpdateTransaction(gameFolderID: gameFolderID, modsFolderPath: modsFolderURL.standardizedFileURL.path, modsFolderIdentity: modsFolderIdentity, destinationPath: destinationURL.path, backupPath: backupURL.path, replacementRecord: replacementRecord, originalRecord: originalRecord, phase: .prepared)
-            try validateTransactionPaths(destinationURL: destinationURL, backupURL: backupURL, modsFolderURL: modsFolderURL)
-            try recoveryStore.save(pending)
-            try fileManager.moveItem(at: destinationURL, to: backupURL)
-            pending.phase = .originalMoved
-            try recoveryStore.save(pending)
-            transaction = pending
-        }
+        var replacementInstalled = false
         do {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+                guard replacementModURL != nil else { throw ModInstallError.alreadyInstalled }
+                let backupsURL = modsFolderURL.appendingPathComponent(".BMM Backups", isDirectory: true)
+                if fileManager.fileExists(atPath: backupsURL.path) {
+                    let values = try backupsURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    guard values.isDirectory == true, values.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }
+                }
+                try fileManager.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+                let backupURL = try containedChildURL(named: "\(folderName)-\(UUID().uuidString)", in: backupsURL)
+                let normalizedPath = destinationURL.standardizedFileURL.path.lowercased()
+                let originalRecord = try registry.record(gameFolderID: gameFolderID, modPath: normalizedPath) ?? InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: normalizedPath, dependencies: [], currentVersion: nil, orphaned: false, catalogID: nil)
+                let replacementRecord = InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: normalizedPath, dependencies: dependencies, currentVersion: mod.version, orphaned: false, catalogID: mod.id)
+                var pending = UpdateTransaction(gameFolderID: gameFolderID, modsFolderPath: modsFolderURL.standardizedFileURL.path, modsFolderIdentity: modsFolderIdentity, destinationPath: destinationURL.path, backupPath: backupURL.path, replacementRecord: replacementRecord, originalRecord: originalRecord, phase: .prepared)
+                try validateTransactionPaths(destinationURL: destinationURL, backupURL: backupURL, modsFolderURL: modsFolderURL)
+                transaction = pending
+                try recoveryStore.save(pending)
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+                pending.phase = .originalMoved
+                try recoveryStore.save(pending)
+                transaction = pending
+            }
             try Task.checkCancellation()
             try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
-            if wasDisabled { try Data().write(to: destinationURL.appendingPathComponent(".lovelyignore"), options: .atomic) }
+            replacementInstalled = true
+            let markerURL = destinationURL.appendingPathComponent(".lovelyignore")
+            if wasDisabled { try Data().write(to: markerURL, options: .atomic) }
+            else if replacementModURL != nil, fileManager.fileExists(atPath: markerURL.path) {
+                try fileManager.removeItem(at: markerURL)
+            }
             if var pending = transaction {
                 pending.phase = .replacementMoved
                 try recoveryStore.save(pending)
@@ -310,6 +331,11 @@ actor ModFileService {
             }
         } catch {
             if var pending = transaction { try? rollbackUpdate(&pending, destinationURL: destinationURL) }
+            else if replacementInstalled {
+                try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+                _ = try validatedImmediateModChild(destinationURL, in: modsFolderURL)
+                try fileManager.removeItem(at: destinationURL)
+            }
             throw error
         }
         let record = InstalledModRecord(gameFolderID: gameFolderID, name: folderName, path: destinationURL.path, normalizedModPath: destinationURL.standardizedFileURL.path.lowercased(), dependencies: dependencies, currentVersion: mod.version, orphaned: false, catalogID: mod.id)
@@ -329,6 +355,10 @@ actor ModFileService {
         } catch {
             if var pending = transaction, !pending.phase.isCommit {
                 try? rollbackUpdate(&pending, destinationURL: destinationURL)
+            } else if transaction == nil {
+                try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
+                _ = try validatedImmediateModChild(destinationURL, in: modsFolderURL)
+                try fileManager.removeItem(at: destinationURL)
             }
             throw error
         }
@@ -343,6 +373,7 @@ actor ModFileService {
     private func downloadArchive(from url: URL) async throws -> URL {
         guard TrustedDownloadSession.isTrusted(url) else { throw ModInstallError.untrustedDownloadURL }
         let (bytes, response) = try await downloadSession.session.bytes(from: url)
+        defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse, 200..<300 ~= response.statusCode else { throw ModInstallError.downloadFailed }
         if let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init), length > Self.maximumArchiveCompressedSize {
             throw ModInstallError.archiveTooLarge
@@ -377,9 +408,10 @@ actor ModFileService {
     /// Identifies ZIP archives from magic bytes rather than trusting remote filenames or headers.
     private func isZIPArchive(at url: URL) throws -> Bool { let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }; let magic = try handle.read(upToCount: 4) ?? Data(); return magic.starts(with: [0x50, 0x4B, 0x03, 0x04]) || magic.starts(with: [0x50, 0x4B, 0x05, 0x06]) || magic.starts(with: [0x50, 0x4B, 0x07, 0x08]) }
     /// Extracts a ZIP under file-count, size, and path-traversal limits, rechecking the mutation root per entry.
-    private func extractZIPArchive(at archiveURL: URL, to destinationURL: URL, mutationCheck: () throws -> Void) throws {
+    func extractZIPArchive(at archiveURL: URL, to destinationURL: URL, mutationCheck: () throws -> Void) throws {
         let archive = try Archive(url: archiveURL, accessMode: .read)
         var count = 0; var size: UInt64 = 0
+        var hasFiles = false
         for entry in archive {
             try Task.checkCancellation()
             let (nextCount, countOverflow) = count.addingReportingOverflow(1)
@@ -390,19 +422,65 @@ actor ModFileService {
             guard !sizeOverflow, nextSize <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
             size = nextSize
             _ = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
+            guard entry.type == .file || entry.type == .directory else { throw ModInstallError.unsafeArchive }
+            if entry.type == .file { hasFiles = true }
         }
+        guard hasFiles else { throw ModInstallError.unsafeArchive }
         let available = try destinationURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
             .volumeAvailableCapacityForImportantUsage
         guard available == nil || available! >= Int64(size) else { throw ModInstallError.insufficientStorage }
+        var extractedSize: UInt64 = 0
         for entry in archive {
             try Task.checkCancellation()
             try mutationCheck()
             let output = try safeArchiveOutputURL(for: entry.path, in: destinationURL)
-            switch entry.type { case .directory: try fileManager.createDirectory(at: output, withIntermediateDirectories: true); case .file: try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true); _ = try archive.extract(entry, to: output, bufferSize: 64 * 1024); case .symlink: throw ModInstallError.unsafeArchive; @unknown default: throw ModInstallError.unsafeArchive }
+            switch entry.type {
+            case .directory:
+                try fileManager.createDirectory(at: output, withIntermediateDirectories: true)
+            case .file:
+                try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+                guard !fileManager.fileExists(atPath: output.path),
+                      fileManager.createFile(atPath: output.path, contents: nil) else { throw ModInstallError.unsafeArchive }
+                let handle = try FileHandle(forWritingTo: output)
+                defer { try? handle.close() }
+                var entrySize: UInt64 = 0
+                let checksum = try archive.extract(entry, bufferSize: 64 * 1024) { chunk in
+                    try Task.checkCancellation()
+                    try mutationCheck()
+                    let (nextEntrySize, entryOverflow) = entrySize.addingReportingOverflow(UInt64(chunk.count))
+                    let (nextTotalSize, totalOverflow) = extractedSize.addingReportingOverflow(UInt64(chunk.count))
+                    guard !entryOverflow, !totalOverflow,
+                          nextEntrySize <= entry.uncompressedSize,
+                          nextEntrySize <= Self.maximumArchiveEntrySize,
+                          nextTotalSize <= Self.maximumArchiveUncompressedSize else { throw ModInstallError.archiveTooLarge }
+                    entrySize = nextEntrySize
+                    extractedSize = nextTotalSize
+                    try handle.write(contentsOf: chunk)
+                }
+                guard entrySize == entry.uncompressedSize, checksum == entry.checksum else { throw ModInstallError.unsafeArchive }
+            case .symlink: throw ModInstallError.unsafeArchive
+            @unknown default: throw ModInstallError.unsafeArchive
+            }
         }
     }
     /// Converts an archive entry into a safe descendant URL, rejecting zip-slip and platform-ambiguous paths.
-    private func safeArchiveOutputURL(for path: String, in destination: URL) throws -> URL { let components = path.replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/", omittingEmptySubsequences: true); guard !components.isEmpty else { return destination }; guard components.count <= Self.maximumArchivePathDepth, components.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains(":") }) else { throw ModInstallError.unsafeArchive }; return components.reduce(destination) { $0.appendingPathComponent(String($1), isDirectory: false) } }
+    func safeArchiveOutputURL(for path: String, in destination: URL) throws -> URL {
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: true)
+        guard !normalized.hasPrefix("/"), !components.isEmpty,
+              path.rangeOfCharacter(from: .controlCharacters) == nil,
+              components.count <= Self.maximumArchivePathDepth,
+              components.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains(":") }) else { throw ModInstallError.unsafeArchive }
+        var output = destination.standardizedFileURL
+        let rootPath = output.resolvingSymlinksInPath().path + "/"
+        for component in components {
+            output.appendPathComponent(String(component))
+            let values = try? output.resourceValues(forKeys: [.isSymbolicLinkKey])
+            guard values?.isSymbolicLink != true,
+                  output.resolvingSymlinksInPath().path.hasPrefix(rootPath) else { throw ModInstallError.unsafeArchive }
+        }
+        return output
+    }
     /// Validates the BMI-provided folder name as one safe, non-reserved immediate child of Mods.
     private func validatedInstallFolderName(for mod: CatalogMod) throws -> String { let name = (mod.folderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? mod.folderName! : mod.id).trimmingCharacters(in: .whitespacesAndNewlines); let reserved: Set<String> = [".", "..", "mods", "disabled mods", ".bmm backups", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]; let device = name.split(separator: ".", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""; guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"), name.rangeOfCharacter(from: .controlCharacters) == nil, !reserved.contains(name.lowercased()), !reserved.contains(device) else { throw ModInstallError.unsafeFolderName }; return name }
     /// Builds and verifies an immediate child URL so catalog data cannot escape the intended root.
@@ -424,6 +502,10 @@ actor ModFileService {
     private func validateTransactionPaths(destinationURL: URL, backupURL: URL, modsFolderURL: URL) throws {
         let root = modsFolderURL.standardizedFileURL
         let backups = try containedChildURL(named: ".BMM Backups", in: root)
+        if fileManager.fileExists(atPath: backups.path) {
+            let values = try backups.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { throw ModInstallError.invalidUpdateTarget }
+        }
         guard destinationURL.standardizedFileURL.deletingLastPathComponent() == root,
               destinationURL.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath(),
               backupURL.standardizedFileURL.deletingLastPathComponent() == backups,
@@ -463,9 +545,10 @@ actor ModFileService {
                       temporaryURL.resolvingSymlinksInPath().deletingLastPathComponent() == modsFolderURL.resolvingSymlinksInPath() else { continue }
                 try revalidateMutationRoot(modsFolderURL, identity: modsFolderIdentity, gameFolderID: gameFolderID)
                 if transaction.phase.isCommit {
-                    try registry.remove(gameFolderID: gameFolderID, modPath: modURL.standardizedFileURL.path.lowercased())
-                    try Task.checkCancellation()
-                    if fileManager.fileExists(atPath: modURL.path) { try fileManager.removeItem(at: modURL) }
+                    // The original path may now belong to a new Files-app installation.
+                    if !fileManager.fileExists(atPath: modURL.path) {
+                        try registry.remove(gameFolderID: gameFolderID, modPath: modURL.standardizedFileURL.path.lowercased())
+                    }
                     try Task.checkCancellation()
                     if fileManager.fileExists(atPath: temporaryURL.path) { try fileManager.removeItem(at: temporaryURL) }
                     try deletionRecoveryStore.remove(transaction)
@@ -480,23 +563,24 @@ actor ModFileService {
     /// Restores the original mod directory and registry record when a replacement cannot commit.
     private func rollbackUpdate(_ transaction: inout UpdateTransaction, destinationURL: URL) throws {
         let backupURL = URL(fileURLWithPath: transaction.backupPath)
+        let modsFolderURL = URL(fileURLWithPath: transaction.modsFolderPath, isDirectory: true)
+        let identity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: transaction.gameFolderID)
+        guard transaction.modsFolderIdentity.isEmpty || transaction.modsFolderIdentity == identity else { throw ModInstallError.invalidUpdateTarget }
+        try validateTransactionPaths(destinationURL: destinationURL, backupURL: backupURL, modsFolderURL: modsFolderURL)
         if !transaction.phase.isRollback {
             transaction.phase = .rollingBack
             try recoveryStore.save(transaction)
         }
-        try Task.checkCancellation()
         if fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
             try fileManager.removeItem(at: destinationURL)
         }
         transaction.phase = .rollbackDestinationRemoved
         try recoveryStore.save(transaction)
-        try Task.checkCancellation()
         if !fileManager.fileExists(atPath: destinationURL.path), fileManager.fileExists(atPath: backupURL.path) {
             try fileManager.moveItem(at: backupURL, to: destinationURL)
         }
         transaction.phase = .rollbackOriginalRestored
         try recoveryStore.save(transaction)
-        try Task.checkCancellation()
         if fileManager.fileExists(atPath: destinationURL.path) {
             try registry.add(transaction.originalRecord)
         } else {
@@ -509,19 +593,21 @@ actor ModFileService {
 
     /// Moves a temporarily deleted directory back into place and restores its registry entry.
     private func rollbackDeletion(_ transaction: inout DeletionTransaction, modURL: URL, temporaryURL: URL) throws {
+        let modsFolderURL = URL(fileURLWithPath: transaction.modsFolderPath, isDirectory: true)
+        let identity = try verifiedModsFolderIdentity(modsFolderURL: modsFolderURL, expectedGameFolderID: transaction.gameFolderID)
+        guard transaction.modsFolderIdentity.isEmpty || transaction.modsFolderIdentity == identity else { throw ModInstallError.invalidUpdateTarget }
         if !transaction.phase.isRollback {
             transaction.phase = .rollingBack
             try deletionRecoveryStore.save(transaction)
         }
-        try Task.checkCancellation()
         if fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) {
-            try fileManager.removeItem(at: temporaryURL)
+            // Preserve both installations if another writer recreated the original path.
+            throw ModInstallError.alreadyInstalled
         } else if !fileManager.fileExists(atPath: modURL.path), fileManager.fileExists(atPath: temporaryURL.path) {
             try fileManager.moveItem(at: temporaryURL, to: modURL)
         }
         transaction.phase = .rollbackFileRestored
         try deletionRecoveryStore.save(transaction)
-        try Task.checkCancellation()
         if fileManager.fileExists(atPath: modURL.path), let record = transaction.record {
             try registry.add(record)
         } else {
@@ -635,9 +721,9 @@ nonisolated private final class UpdateRecoveryStore {
     private let fileManager: FileManager
 
     /// Stores update journals beneath Application Support rather than the externally selected game folder.
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, storageRootURL: URL? = nil) {
         self.fileManager = fileManager
-        directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        directoryURL = (storageRootURL ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])
             .appendingPathComponent("BMM Mobile", isDirectory: true)
             .appendingPathComponent("update-transactions", isDirectory: true)
     }
@@ -751,9 +837,9 @@ nonisolated private final class DeletionRecoveryStore {
     private let fileManager: FileManager
 
     /// Stores deletion journals beneath Application Support rather than the externally selected game folder.
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, storageRootURL: URL? = nil) {
         self.fileManager = fileManager
-        directoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        directoryURL = (storageRootURL ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])
             .appendingPathComponent("BMM Mobile", isDirectory: true)
             .appendingPathComponent("deletion-transactions", isDirectory: true)
     }
