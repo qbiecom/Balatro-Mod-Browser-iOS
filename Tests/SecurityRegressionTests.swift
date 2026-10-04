@@ -18,11 +18,11 @@ final class SecurityRegressionTests: XCTestCase {
     }
 
     func testDownloadURLAllowlist() {
-        for value in ["https://github.com/a.zip", "https://api-bmi.dasguney.com/mods", "https://codeload.github.com/a"] {
+        for value in ["https://github.com/a.zip", "https://raw.githubusercontent.com/kasimeka/balatro-mod-index/main/README.md", "https://codeload.github.com/a"] {
             XCTAssertTrue(TrustedDownloadSession.isTrusted(URL(string: value)!))
         }
         for value in ["http://github.com/a", "https://github.com.evil.test/a", "https://github.com:444/a",
-                      "https://user:password@github.com/a", "https://127.0.0.1/a", "file:///tmp/a"] {
+                      "https://user:password@github.com/a", "https://127.0.0.1/a", "file:///tmp/a", "https://api-bmi.dasguney.com/mods"] {
             XCTAssertFalse(TrustedDownloadSession.isTrusted(URL(string: value)!))
         }
     }

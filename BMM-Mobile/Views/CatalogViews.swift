@@ -134,13 +134,6 @@ struct AllModsView: View {
                 return compareText(lhs.categories?.first ?? "Miscellaneous", rhs.categories?.first ?? "Miscellaneous")
             case .lastUpdated:
                 return compareNumber(lhs.updatedAt?.value ?? 0, rhs.updatedAt?.value ?? 0)
-            case .downloads:
-                let left = lhs.downloads?.total ?? 0
-                let right = rhs.downloads?.total ?? 0
-                if left == right {
-                    return compareText(lhs.name ?? lhs.id, rhs.name ?? rhs.id)
-                }
-                return compareNumber(Int64(left), Int64(right))
             }
         }
     }
@@ -223,9 +216,6 @@ struct CatalogTile: View {
                         }
                         if mod.requiresTalisman == true {
                             Label("Talisman", systemImage: "wand.and.stars")
-                        }
-                        if let downloads = mod.downloads?.total {
-                            Label(downloads.formatted(), systemImage: "arrow.down.circle")
                         }
                     }
                     .font(.balatroChrome(11))
@@ -349,7 +339,7 @@ struct CatalogModDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This replaces the installed BMI version with the latest code from Steamodded's main branch. Development builds may be unstable.")
+            Text("This replaces the installed version with the latest code from Steamodded's main branch. Development builds may be unstable.")
         }
     }
 
@@ -455,9 +445,6 @@ struct CatalogModDetailView: View {
                 if displayedMod.requiresTalisman == true {
                     DetailRow(label: "Requires", value: "Talisman")
                 }
-                if let downloads = displayedMod.downloads?.total {
-                    DetailRow(label: "Downloads", value: downloads.formatted())
-                }
             }
         }
         .padding(20)
@@ -471,7 +458,6 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
     case author
     case category
     case lastUpdated
-    case downloads
 
     var id: Self { self }
 
@@ -481,7 +467,6 @@ private enum CatalogSort: String, CaseIterable, Identifiable {
         case .author: "Author"
         case .category: "Category"
         case .lastUpdated: "Last Updated"
-        case .downloads: "Downloads"
         }
     }
 }

@@ -13,9 +13,10 @@ let package = Package(
             path: "BMM-Mobile",
             exclude: ["Assets.xcassets", "Fonts", "Views", "BMMMobileApp.swift", "ContentView.swift",
                       "Services/ModFolderStore.swift", "Services/ThumbnailLoader.swift",
-                      "Services/ThumbnailCache.swift", "Services/ModsFolderPresenter.swift", "Services/CatalogFileCache.swift"],
+                      "Services/ThumbnailCache.swift", "Services/ModsFolderPresenter.swift"],
             sources: ["Models/ModModels.swift", "Services/ModFileService.swift",
-                      "Services/InstalledModRegistry.swift", "Services/TrustedDownloadSession.swift"]
+                      "Services/InstalledModRegistry.swift", "Services/TrustedDownloadSession.swift",
+                      "Services/GitHubCatalogService.swift", "Services/CatalogFileCache.swift"]
         ),
         .testTarget(name: "BMMCoreTests", dependencies: ["BMMCore", "ZIPFoundation"], path: "Tests")
     ],

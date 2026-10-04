@@ -1,11 +1,10 @@
 import Foundation
 
-/// BMI downloads may originate at the API or one of its explicitly approved HTTPS CDNs.
+/// Catalog content and mod archives must originate at explicitly approved HTTPS hosts.
 /// Private addresses, credential-bearing URLs, and arbitrary redirect destinations are rejected.
 nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let trustedHosts: Set<String> = [
-        "api-bmi.dasguney.com",
-        "cdn.dasguney.com",
+        "raw.githubusercontent.com",
         "github.com",
         "api.github.com",
         "codeload.github.com",
@@ -29,7 +28,7 @@ nonisolated final class TrustedDownloadSession: NSObject, URLSessionTaskDelegate
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
-    /// Allows only HTTPS download URLs whose host is explicitly approved for BMI installations.
+    /// Allows only HTTPS URLs whose host is explicitly approved for catalog content and installations.
     static func isTrusted(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,

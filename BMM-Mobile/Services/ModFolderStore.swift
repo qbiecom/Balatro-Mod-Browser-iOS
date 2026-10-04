@@ -42,19 +42,19 @@ final class ModFolderStore: ObservableObject {
     private let pendingRelinkIdentityKey = "pendingGameFolderRelinkIdentity"
     private let catalogFileCache = CatalogFileCache()
     private let downloadSession = TrustedDownloadSession()
+    private lazy var githubCatalog = GitHubCatalogService(session: downloadSession)
     private lazy var fileService = ModFileService(downloadSession: downloadSession)
     private let catalogCacheLifetime: TimeInterval = 60 * 15
     private let detailCacheLifetime: TimeInterval = 60 * 60 * 48
-    private let downloadsCacheLifetime: TimeInterval = 60 * 15
     private var activeGameFolderURL: URL?
     private var catalogMods: [String: CatalogMod] = [:]
     private var catalogNameAliases: [String: String] = [:]
     private var catalogFolderAliases: [String: String] = [:]
     private var installedCatalogIDsByPath: [String: String] = [:]
-    private var latestCatalogUpdate: FlexibleTimestamp?
+    private var sourceRevision: String?
+    private var sourceFileHashes: [String: String] = [:]
     private var catalogRefreshedAt: Date?
     private var detailCache: [String: DetailCacheEntry] = [:]
-    private var downloadsRefreshedAt: Date?
     private var refreshTask: Task<Void, Never>?
     private var catalogRefreshTask: Task<Void, Never>?
     private var detailTasks: [String: Task<CatalogMod?, Never>] = [:]
@@ -75,9 +75,9 @@ final class ModFolderStore: ObservableObject {
         guard let self, let snapshot = try? await self.catalogFileCache.load(), self.cacheRevision == 0 else { return }
         self.catalogMods = self.indexed(Array(snapshot.records.values))
         self.detailCache = snapshot.details
-        self.latestCatalogUpdate = snapshot.latestCatalogUpdate
+        self.sourceRevision = snapshot.sourceRevision
+        self.sourceFileHashes = snapshot.sourceFileHashes ?? [:]
         self.catalogRefreshedAt = snapshot.catalogRefreshedAt
-        self.downloadsRefreshedAt = snapshot.downloadsRefreshedAt
         self.rebuildCatalogAliases()
         self.applyCachedDetailsToCatalog()
         self.catalogItems = self.uniqueCatalogItems(from: self.catalogMods)
@@ -216,7 +216,7 @@ final class ModFolderStore: ObservableObject {
 
     /// Requests a catalog refresh that also bypasses the separate download-count cache.
     func forceRefreshCatalog() {
-        startCatalogRefresh(forceDownloads: true)
+        startCatalogRefresh()
     }
 
     /// Invalidates catalog, detail, download, and thumbnail caches before fetching a clean BMI snapshot.
@@ -237,10 +237,10 @@ final class ModFolderStore: ObservableObject {
         catalogNameAliases = [:]
         catalogFolderAliases = [:]
         catalogItems = []
-        latestCatalogUpdate = nil
+        sourceRevision = nil
+        sourceFileHashes = [:]
         catalogRefreshedAt = nil
         detailCache = [:]
-        downloadsRefreshedAt = nil
         catalogRefreshTask = Task { [weak self] in
             guard let self else { return }
             await cacheLoadTask.value
@@ -249,7 +249,7 @@ final class ModFolderStore: ObservableObject {
             guard !Task.isCancelled, generation == catalogGeneration else { return }
             try? await catalogFileCache.remove(revision: revision)
             guard !Task.isCancelled, generation == catalogGeneration else { return }
-            await fetchCatalog(forceDownloads: true, generation: generation, managesLoadingState: false)
+            await fetchCatalog(generation: generation, managesLoadingState: false)
             guard generation == catalogGeneration else { return }
             isLoadingCatalog = false
             catalogRefreshTask = nil
@@ -289,6 +289,7 @@ final class ModFolderStore: ObservableObject {
             return
         }
         let generation = catalogGeneration
+        let fileHash = sourceFileHashes[key]
         let task = Task<CatalogMod?, Never> { [weak self] in
             guard let self else { return nil }
             return try? await fetchModDetail(id: catalogMod.id)
@@ -299,6 +300,7 @@ final class ModFolderStore: ObservableObject {
         detailTasks[key] = nil
         guard let detail else { return }
         guard let current = catalogMods[key],
+              sourceFileHashes[key] == fileHash,
               detail.id.caseInsensitiveCompare(current.id) == .orderedSame,
               (detail.updatedAt?.value ?? 0) >= (current.updatedAt?.value ?? 0) else { return }
         detailCache[key] = DetailCacheEntry(mod: detail, refreshedAt: Date())
@@ -733,6 +735,7 @@ final class ModFolderStore: ObservableObject {
     }
 
     private var catalogNeedsRefresh: Bool {
+        guard sourceRevision != nil else { return true }
         guard let catalogRefreshedAt else {
             return true
         }
@@ -740,125 +743,58 @@ final class ModFolderStore: ObservableObject {
     }
 
     /// Ensures only one catalog synchronization task runs for the current cache generation.
-    private func startCatalogRefresh(forceDownloads: Bool = false) {
+    private func startCatalogRefresh() {
         guard catalogRefreshTask == nil else { return }
         let generation = catalogGeneration
         catalogRefreshTask = Task { [weak self] in
             guard let self else { return }
-            await fetchCatalog(forceDownloads: forceDownloads, generation: generation)
+            await fetchCatalog(generation: generation)
             guard generation == catalogGeneration else { return }
             catalogRefreshTask = nil
         }
     }
 
-    /// Synchronizes the BMI catalog incrementally and discards results from a superseded refresh generation.
-    private func fetchCatalog(forceDownloads: Bool = false, generation: Int, managesLoadingState: Bool = true) async {
+    /// Publishes only a complete commit-pinned index; failures preserve the previous offline catalog.
+    private func fetchCatalog(generation: Int, managesLoadingState: Bool = true) async {
         await cacheLoadTask.value
         guard !Task.isCancelled, generation == catalogGeneration else { return }
-
         if managesLoadingState { isLoadingCatalog = true }
         catalogErrorMessage = nil
         defer {
             if managesLoadingState, generation == catalogGeneration { isLoadingCatalog = false }
         }
-
         do {
-            if catalogMods.isEmpty || latestCatalogUpdate == nil {
-                let fetched = try await fetchCatalogPages(path: "mods", query: [])
-                guard !Task.isCancelled, generation == catalogGeneration else { return }
-                catalogMods = indexed(fetched)
-                rebuildCatalogAliases()
-                latestCatalogUpdate = fetched.compactMap(\.updatedAt).max { $0.value < $1.value }
-            } else if let latestCatalogUpdate {
-                let changed = try await fetchCatalogPages(
-                    path: "mods/changed",
-                    query: [URLQueryItem(name: "since", value: String(latestCatalogUpdate.value))]
-                )
-                guard !Task.isCancelled, generation == catalogGeneration else { return }
-                for mod in changed {
-                    if mod.isDeleted == true {
-                        remove(mod)
-                    } else {
-                        apply(mod)
-                    }
-                }
-                rebuildCatalogAliases()
-                if let newest = changed.compactMap(\.updatedAt).max(by: { $0.value < $1.value }) {
-                    self.latestCatalogUpdate = newest
-                }
+            let snapshot = try await githubCatalog.fetch(records: catalogMods, fileHashes: sourceFileHashes)
+            guard !Task.isCancelled, generation == catalogGeneration else { return }
+            detailCache = detailCache.filter { key, _ in
+                sourceFileHashes[key] == snapshot.fileHashes[key] && snapshot.fileHashes[key] != nil
             }
-
+            catalogMods = snapshot.records
+            sourceRevision = snapshot.revision
+            sourceFileHashes = snapshot.fileHashes
+            if !snapshot.skippedEntries.isEmpty {
+                let count = snapshot.skippedEntries.count
+                catalogErrorMessage = "\(count) index entr\(count == 1 ? "y has" : "ies have") invalid metadata. Cached details were kept where available; other mods are ready to browse."
+            }
             applyCachedDetailsToCatalog()
-
             catalogRefreshedAt = Date()
-            catalogItems = uniqueCatalogItems(from: catalogMods)
             persistCatalog(generation: generation)
             refreshMods()
             refreshAvailableUpdates()
-            await refreshDownloadsIfNeeded(force: forceDownloads, generation: generation)
         } catch {
             guard !Task.isCancelled, generation == catalogGeneration else { return }
-            catalogErrorMessage = "Couldn’t update the mod catalog. Check your connection and try again."
-            return
+            if let error = error as? GitHubCatalogError {
+                catalogErrorMessage = error.localizedDescription
+            } else {
+                catalogErrorMessage = "Couldn’t refresh the GitHub mod index. Your cached catalog is still available. Check your connection or try again later."
+            }
         }
     }
 
-    /// Refreshes download counters separately from the catalog and prunes only a plausibly complete response.
-    private func refreshDownloadsIfNeeded(force: Bool, generation: Int) async {
-        guard force || downloadsRefreshedAt.map({ Date().timeIntervalSince($0) > downloadsCacheLifetime }) ?? true else { return }
-        do {
-            let mods = try await fetchCatalogPages(path: "mods", query: [])
-            guard !Task.isCancelled, generation == catalogGeneration else { return }
-            let prunedCount = pruneRemovedCatalogMods(using: mods)
-            for mod in mods where mod.downloads != nil {
-                apply(mod)
-            }
-            downloadsRefreshedAt = Date()
-            catalogItems = uniqueCatalogItems(from: catalogMods)
-            persistCatalog(generation: generation)
-            if prunedCount > 0 {
-                let suffix = prunedCount == 1 ? "" : "s"
-                showCatalogInfo("Pruned \(prunedCount) removed mod\(suffix) from the catalog cache.")
-            }
-        } catch {
-            return
-        }
-    }
-
-    /// Follows BMI cursor pagination and returns the full result set for an endpoint.
-    private func fetchCatalogPages(path: String, query: [URLQueryItem]) async throws -> [CatalogMod] {
-        var cursor: String?
-        var results: [CatalogMod] = []
-        var seenCursors = Set<String>()
-        var pageCount = 0
-        repeat {
-            try Task.checkCancellation()
-            pageCount += 1
-            guard pageCount <= 100 else { throw URLError(.badServerResponse) }
-            var components = URLComponents(string: "https://api-bmi.dasguney.com/\(path)")
-            var items = query + [
-                URLQueryItem(name: "limit", value: "200"),
-                URLQueryItem(name: "sort", value: "name_asc")
-            ]
-            if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
-            components?.queryItems = items
-            guard let url = components?.url else { throw URLError(.badURL) }
-            let (data, _) = try await downloadSession.data(from: url, maximumBytes: 4 * 1024 * 1024)
-            let page = try JSONDecoder().decode(CatalogPage.self, from: data)
-            results.append(contentsOf: page.items)
-            cursor = page.nextCursor
-            if let cursor, !seenCursors.insert(cursor).inserted { throw URLError(.badServerResponse) }
-        } while cursor != nil
-        return results
-    }
-
-    /// Fetches one full catalog entry from BMI using a path-safe encoded stable ID.
+    /// Loads the description from the same commit as the visible catalog metadata.
     private func fetchModDetail(id: String) async throws -> CatalogMod {
-        let pathAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~@"))
-        guard id != ".", id != "..", let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) else { throw URLError(.badURL) }
-        guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else { throw URLError(.badURL) }
-        let (data, _) = try await downloadSession.data(from: url, maximumBytes: 4 * 1024 * 1024)
-        return try JSONDecoder().decode(CatalogMod.self, from: data)
+        guard let mod = catalogMods[id.lowercased()], let sourceRevision else { throw GitHubCatalogError.invalidIndex }
+        return try await githubCatalog.detail(for: mod, revision: sourceRevision)
     }
 
     /// Indexes catalog records by lowercase BMI ID, merging duplicates from incremental responses.
@@ -894,29 +830,6 @@ final class ModFolderStore: ObservableObject {
         catalogItems = uniqueCatalogItems(from: catalogMods)
     }
 
-    /// Removes a BMI-deleted catalog entry and its separately cached full-detail response.
-    private func remove(_ mod: CatalogMod) {
-        catalogMods.removeValue(forKey: mod.id.lowercased())
-        detailCache.removeValue(forKey: mod.id.lowercased())
-        rebuildCatalogAliases()
-    }
-
-    /// Removes cache entries absent from a sufficiently complete full-catalog response.
-    private func pruneRemovedCatalogMods(using freshMods: [CatalogMod]) -> Int {
-        let incomingIDs = Set(freshMods.map { $0.id.lowercased() })
-        let existingCount = catalogMods.count
-        let minimumTrustedCount = max(10, existingCount / 2)
-        guard !incomingIDs.isEmpty, incomingIDs.count >= minimumTrustedCount else { return 0 }
-
-        let removedIDs = Set(catalogMods.keys).subtracting(incomingIDs)
-        guard !removedIDs.isEmpty else { return 0 }
-        for id in removedIDs {
-            catalogMods.removeValue(forKey: id)
-            detailCache.removeValue(forKey: id)
-        }
-        rebuildCatalogAliases()
-        return removedIDs.count
-    }
 
     /// Rebuilds unambiguous display-name and folder-name aliases after catalog mutations.
     private func rebuildCatalogAliases() {
@@ -977,7 +890,7 @@ final class ModFolderStore: ObservableObject {
         guard generation == catalogGeneration else { return }
         cacheRevision += 1
         let revision = cacheRevision
-        let snapshot = CatalogFileCache.Snapshot(records: catalogMods, details: detailCache, latestCatalogUpdate: latestCatalogUpdate, catalogRefreshedAt: catalogRefreshedAt, downloadsRefreshedAt: downloadsRefreshedAt)
+        let snapshot = CatalogFileCache.Snapshot(records: catalogMods, details: detailCache, latestCatalogUpdate: nil, catalogRefreshedAt: catalogRefreshedAt, downloadsRefreshedAt: nil, sourceRevision: sourceRevision, sourceFileHashes: sourceFileHashes)
         Task { [weak self] in
             guard let self, generation == self.catalogGeneration else { return }
             try? await catalogFileCache.save(snapshot, revision: revision)
@@ -1191,54 +1104,11 @@ final class ModFolderStore: ObservableObject {
         }
     }
 
-    /// Requests BMI's tracked download URL for a catalog install or update.
+    /// Uses the index's author-provided URL without contacting the retired BMI download tracker.
     private func resolveDownloadURL(for mod: CatalogMod) async throws -> URL {
         if isSteamodded(mod) { return try await latestSteamoddedReleaseURL() }
-        let id = mod.id
-        let pathAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~@"))
-        guard id != ".", id != "..", let encodedID = id.addingPercentEncoding(withAllowedCharacters: pathAllowed) else { throw ModInstallError.downloadFailed }
-        guard let url = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)/download") else {
-            throw ModInstallError.downloadFailed
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        let (data, response) = try await downloadSession.data(for: request, maximumBytes: 1024 * 1024)
-
-        struct DownloadResponse: Decodable {
-            let downloadURL: String?
-
-            enum CodingKeys: String, CodingKey {
-                case downloadURL = "download_url"
-                case downloadURLCamelCase = "downloadUrl"
-                case url
-            }
-
-            /// Accepts the known BMI download URL field spellings for compatibility with endpoint variants.
-            init(from decoder: Decoder) throws {
-                let container = try decoder.container(keyedBy: CodingKeys.self)
-                downloadURL = try container.decodeIfPresent(String.self, forKey: .downloadURL)
-                    ?? container.decodeIfPresent(String.self, forKey: .downloadURLCamelCase)
-                    ?? container.decodeIfPresent(String.self, forKey: .url)
-            }
-        }
-
-        if response.statusCode == 204 {
-            guard let detailURL = URL(string: "https://api-bmi.dasguney.com/mods/\(encodedID)") else {
-                throw ModInstallError.downloadFailed
-            }
-            let (detailData, _) = try await downloadSession.data(from: detailURL, maximumBytes: 4 * 1024 * 1024)
-            let payload = try JSONDecoder().decode(DownloadResponse.self, from: detailData)
-            guard let downloadURL = payload.downloadURL, let url = URL(string: downloadURL) else {
-                throw ModInstallError.downloadFailed
-            }
-            return url
-        }
-
-        let payload = try JSONDecoder().decode(DownloadResponse.self, from: data)
-        guard let downloadURL = payload.downloadURL, let url = URL(string: downloadURL) else {
-            throw ModInstallError.downloadFailed
-        }
+        guard let value = mod.downloadURL, let url = URL(string: value) else { throw ModInstallError.downloadFailed }
+        guard TrustedDownloadSession.isTrusted(url) else { throw ModInstallError.untrustedDownloadURL }
         return url
     }
 

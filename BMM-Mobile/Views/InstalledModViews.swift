@@ -156,7 +156,7 @@ private struct ModDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This replaces the installed BMI version with the latest code from Steamodded's main branch. Development builds may be unstable.")
+            Text("This replaces the installed version with the latest code from Steamodded's main branch. Development builds may be unstable.")
         }
     }
 
@@ -209,12 +209,6 @@ private struct ModDetailView: View {
                 .buttonStyle(.bordered)
                 .disabled(!folderStore.isInstallerAvailable)
                 .accessibilityHint("Replaces Steamodded with the latest build from its official repository")
-            }
-
-            if let downloads = presentation.downloads {
-                Label(downloads.formatted(), systemImage: "arrow.down.circle")
-                    .font(.balatroChrome(14))
-                    .foregroundStyle(.secondary)
             }
 
             if let repositoryURL = presentation.repositoryURL {
@@ -275,9 +269,6 @@ private struct ModDetailView: View {
                 }
                 if presentation.requiresTalisman {
                     DetailRow(label: "Requires", value: "Talisman")
-                }
-                if let downloads = presentation.downloads {
-                    DetailRow(label: "Downloads", value: downloads.formatted())
                 }
                 if let updatedAt = presentation.updatedAt {
                     DetailRow(label: "Last Updated", value: updatedAt.formatted(date: .abbreviated, time: .omitted))

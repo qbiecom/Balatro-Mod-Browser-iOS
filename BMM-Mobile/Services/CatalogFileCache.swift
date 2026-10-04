@@ -1,6 +1,6 @@
 import Foundation
 
-/// One atomically persisted BMI cache. Records are keyed exclusively by normalized catalog ID.
+/// One atomically persisted catalog cache, retaining compatibility with existing BMI snapshots.
 actor CatalogFileCache {
     struct Snapshot: Codable {
         let records: [String: CatalogMod]
@@ -8,6 +8,8 @@ actor CatalogFileCache {
         let latestCatalogUpdate: FlexibleTimestamp?
         let catalogRefreshedAt: Date?
         let downloadsRefreshedAt: Date?
+        let sourceRevision: String?
+        let sourceFileHashes: [String: String]?
     }
 
     private let fileURL: URL

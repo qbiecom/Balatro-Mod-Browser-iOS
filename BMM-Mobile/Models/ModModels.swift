@@ -1,6 +1,6 @@
 import Foundation
 
-struct FlexibleTimestamp: Codable {
+nonisolated struct FlexibleTimestamp: Codable {
     let value: Int64
 
     /// Accepts BMI timestamps encoded as either numeric JSON values or decimal strings.
@@ -40,7 +40,7 @@ struct InstalledMod: Identifiable {
     let name: String
 }
 
-struct CatalogMod: Codable, Identifiable {
+nonisolated struct CatalogMod: Codable, Identifiable {
     let id: String
     let name: String?
     let author: String?
@@ -80,7 +80,7 @@ struct CatalogMod: Codable, Identifiable {
     }
 
     var cleanedSummary: String? {
-        let rawValue = descriptionHTML.map(Self.plainText(fromHTML:)) ?? description ?? summary
+        let rawValue = descriptionHTML.map(Self.plainText(fromHTML:)) ?? description.map(Self.plainText(fromMarkdown:)) ?? summary
         let value = Self.removingLeadingTitle(from: rawValue, matching: name ?? id)?
             .replacingOccurrences(of: "![]", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -99,8 +99,22 @@ struct CatalogMod: Codable, Identifiable {
     var thumbnailURL: URL? {
         guard let thumbnailPath, !thumbnailPath.isEmpty else { return nil }
         if let absoluteURL = URL(string: thumbnailPath), absoluteURL.scheme != nil { return absoluteURL }
-        let path = thumbnailPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: "https://api-bmi.dasguney.com/")?.appendingPathComponent(path)
+        return nil
+    }
+
+    func replacingDescription(with description: String) -> CatalogMod {
+        CatalogMod(id: id, name: name, author: author, summary: summary, folderName: folderName,
+                   version: version, categories: categories, repository: repository, thumbnailPath: thumbnailPath,
+                   updatedAt: updatedAt, description: description, descriptionHTML: nil, homepage: homepage,
+                   requiresSteamodded: requiresSteamodded, requiresTalisman: requiresTalisman,
+                   downloadURL: downloadURL, downloads: nil, isDeleted: isDeleted, colors: colors)
+    }
+
+    nonisolated private static func plainText(fromMarkdown value: String) -> String {
+        value.replacingOccurrences(of: #"!\[[^\]]*\]\([^\n)]*\)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]+)\]\([^\n)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
     }
 
     /// Prevents older cached details from replacing a newer catalog version or timestamp.
@@ -163,7 +177,7 @@ struct CatalogMod: Codable, Identifiable {
     }
 }
 
-struct ModColors: Codable {
+nonisolated struct ModColors: Codable {
     let first: String
     let second: String
 
@@ -195,7 +209,7 @@ struct ModColors: Codable {
     }
 }
 
-struct ModDownloads: Codable {
+nonisolated struct ModDownloads: Codable {
     let total: Int?
     let today: Int?
 }

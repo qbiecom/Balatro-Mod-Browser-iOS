@@ -19,7 +19,7 @@ jobs:
         run: xcodebuild -version
 
       - name: Run security and recovery regression tests
-        run: swift test
+        run: BMM_TEST_LIVE_INDEX=1 swift test
 
       - name: Archive unsigned app
         run: |

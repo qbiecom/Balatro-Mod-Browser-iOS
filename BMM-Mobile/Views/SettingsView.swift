@@ -58,6 +58,13 @@ struct SettingsView: View {
             Section("Catalog Cache") {
                 Button("Clear Catalog and Thumbnails", role: .destructive, action: clearCache)
             }
+
+            Section("Catalog Source") {
+                Link("Community Balatro Mod Index", destination: URL(string: "https://github.com/kasimeka/balatro-mod-index")!)
+                Text("Mod details are maintained by the community. Downloads come from the mod authors.")
+                    .font(.balatroChrome(12))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

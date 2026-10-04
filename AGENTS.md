@@ -7,13 +7,14 @@ BMM Mobile is a SwiftUI iPad/iOS mod manager for the **Lovely Mobile Maker** ver
 - Bundle identifier: `com.qbie.bmm-mobile`
 - Deployment target: iOS 17
 - External package: ZIPFoundation
-- BMI API: `https://api-bmi.dasguney.com`
+- Catalog source: `https://github.com/kasimeka/balatro-mod-index` (direct GitHub metadata; retired BMI API is unavailable).
 
 ## Code Layout
 
 - `BMM-Mobile/ContentView.swift`: app navigation, dialogs, folder picker, installed-mod grid.
 - `BMM-Mobile/Views/`: catalog, details, settings, tiles, and typography.
-- `BMM-Mobile/Services/ModFolderStore.swift`: app state, BMI catalog, caching, dependency flow, folder access.
+- `BMM-Mobile/Services/ModFolderStore.swift`: app state, catalog, caching, dependency flow, folder access.
+- `BMM-Mobile/Services/GitHubCatalogService.swift`: commit-pinned repository tree, incremental metadata, descriptions, and thumbnail URLs.
 - `BMM-Mobile/Services/ModFileService.swift`: downloads, archive extraction, transactional file operations, and registry access.
 - `BMM-Mobile/Services/TrustedDownloadSession.swift`: approved download hosts and redirect validation.
 - `BMM-Mobile/Models/ModModels.swift`: API and app data models.
@@ -34,11 +35,11 @@ The selected folder must be the `game` directory. Validate only its name when se
 - Preserve disabled state during updates.
 - Do not retain successful-update backups indefinitely.
 - Treat the installation registry and the filesystem as separate sources of truth.
-- Keep download hosts explicitly allowlisted; audit BMI `download_url` values before adding new domains.
+- Keep download hosts explicitly allowlisted; audit catalog `downloadURL` values before adding new domains.
 
 ## Dependencies
 
-- Steamodded is installed from the latest GitHub release, not BMI's generic mod download endpoint.
+- Steamodded is installed from the latest official GitHub release. Other mods use their index `downloadURL` directly.
 - Talisman requirements can be satisfied by Talisman or Amulet; offer a choice when neither is installed.
 - Keep dependency installation and removal dependency-aware.
 
